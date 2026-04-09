@@ -126,8 +126,9 @@ echo.
 set "TORCH_IDX=cpu"
 nvidia-smi >nul 2>&1
 if %ERRORLEVEL%==0 (
-    for /f "delims=" %%T in ('powershell -NoProfile -Command ^
-        "$t=\"cpu\"; try { $s=(nvidia-smi 2>&1 | Out-String); $m=[regex]::Match($s,\"CUDA Version:\s*(\d+)\.(\d+)\"); if($m.Success){ $ma=[int]$m.Groups[1].Value; $mi=[int]$m.Groups[2].Value; if($ma -ge 12){ if($mi -ge 8){$t=\"cu128\"}elseif($mi -ge 4){$t=\"cu124\"}else{$t=\"cu121\"} }elseif($ma -ge 11){ $t=\"cu118\" } } } catch {}; $t"') do set "TORCH_IDX=%%T"
+    powershell -NoProfile -Command "$t='cpu'; try { $s=(nvidia-smi 2>&1 | Out-String); if($s -match 'CUDA Version:\s*12\.[89]'){$t='cu128'} elseif($s -match 'CUDA Version:\s*1[3-9]\.'){$t='cu128'} elseif($s -match 'CUDA Version:\s*12\.[4-7]'){$t='cu124'} elseif($s -match 'CUDA Version:\s*12\.'){$t='cu121'} elseif($s -match 'CUDA Version:\s*11\.'){$t='cu118'} } catch {}; $t" > cuda_detect.tmp 2>nul
+    set /p TORCH_IDX=<cuda_detect.tmp
+    del /f /q cuda_detect.tmp >nul 2>&1
 )
 
 if "%TORCH_IDX%"=="cpu" (
