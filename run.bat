@@ -141,17 +141,30 @@ if "%TORCH_IDX%"=="cpu" (
 
 echo  [GPU] GPU detected -- installing PyTorch %TORCH_IDX% build ^(~2.5 GB^)...
 
-:: ── cu128 = Blackwell / RTX 50xx — needs PyTorch 2.7+ for sm_100 kernels ────
+:: ── cu128: CUDA 12.8 driver — check if GPU is actually Blackwell (sm_100) ────
 if "%TORCH_IDX%"=="cu128" (
-    echo  [..] RTX 50xx ^(Blackwell^) detected -- requiring PyTorch ^>=2.7 for sm_100 support...
-    runtime\python.exe -m pip install "torch>=2.7.0" torchaudio ^
-        --index-url https://download.pytorch.org/whl/cu128 ^
-        --no-warn-script-location --quiet
+    :: Query compute capability — Blackwell is 10.0+; Ampere/Ada are 8.x/8.9
+    set "IS_BLACKWELL=0"
+    powershell -NoProfile -Command "$r='0'; try { $caps=(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>&1); foreach($c in $caps){ if([float]$c.Trim() -ge 10.0){$r='1'; break} } } catch {}; $r" > blackwell_detect.tmp 2>nul
+    set /p IS_BLACKWELL=<blackwell_detect.tmp
+    del /f /q blackwell_detect.tmp >nul 2>&1
 
-    :: Quick GPU smoke-test
+    if "!IS_BLACKWELL!"=="1" (
+        echo  [..] Blackwell GPU ^(RTX 50xx^) detected -- requiring PyTorch ^>=2.7 for sm_100 kernels...
+        runtime\python.exe -m pip install "torch>=2.7.0" torchaudio ^
+            --index-url https://download.pytorch.org/whl/cu128 ^
+            --no-warn-script-location --quiet
+    ) else (
+        echo  [GPU] CUDA 12.8 driver -- installing PyTorch cu128 build...
+        runtime\python.exe -m pip install torch torchaudio ^
+            --index-url https://download.pytorch.org/whl/cu128 ^
+            --no-warn-script-location --quiet
+    )
+
+    :: Quick GPU smoke-test — if it fails, try nightly
     runtime\python.exe -c "import torch; torch.zeros(1).cuda()" >nul 2>&1
-    if %ERRORLEVEL% neq 0 (
-        echo  [!] Stable cu128 did not pass GPU test -- trying PyTorch nightly build...
+    if !ERRORLEVEL! neq 0 (
+        echo  [!] cu128 did not pass GPU test -- trying PyTorch nightly build...
         runtime\python.exe -m pip install --pre torch torchaudio ^
             --index-url https://download.pytorch.org/whl/nightly/cu128 ^
             --no-warn-script-location --quiet
