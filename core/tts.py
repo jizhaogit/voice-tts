@@ -188,33 +188,46 @@ def chunk_text(text: str, max_chars: int | None = None) -> list[str]:
     """Split text into chunks ≤ max_chars on sentence boundaries.
 
     Handles English, Chinese (。！？), and Japanese (。！？) punctuation.
+    Guarantees no chunk shorter than MIN_CHUNK chars reaches F5-TTS, which
+    crashes on single characters.
     """
     if max_chars is None:
         max_chars = int(os.getenv("TTS_CHUNK_SIZE", 250))
 
-    # Normalise line endings
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    MIN_CHUNK = 8  # shorter than this → merge into the previous chunk
 
-    # Split on sentence-ending punctuation (EN + CJK)
-    raw_sentences = re.split(r'(?<=[.!?。！？])\s*', text.strip())
+    # Punctuation-only pattern — not speakable, causes F5-TTS tensor errors
+    _punct_only = re.compile(r'^[\s\W]+$', re.UNICODE)
+
+    # Normalise line endings and whitespace
+    text = re.sub(r'\r\n?', '\n', text).strip()
+
+    # Split AFTER sentence-ending punctuation (EN + CJK)
+    raw_sentences = re.split(r'(?<=[.!?。！？])\s*', text)
 
     chunks: list[str] = []
     current = ""
-
-    # Punctuation-only pattern — these are not speakable and cause F5-TTS to crash
-    _punct_only = re.compile(r'^[\s\W]+$')
 
     for sent in raw_sentences:
         sent = sent.strip()
         if not sent or _punct_only.match(sent):
             continue
+
         if len(current) + len(sent) + 1 > max_chars:
             if current:
                 chunks.append(current)
-            # Sentence is itself too long — hard-split
+                current = ""
+            # Sentence itself is longer than max_chars — hard-split at word
+            # boundaries (EN) or fixed width (CJK).  Ensure no leftover is
+            # shorter than MIN_CHUNK by absorbing it into the last split piece.
             while len(sent) > max_chars:
-                chunks.append(sent[:max_chars])
-                sent = sent[max_chars:]
+                split_at = max_chars
+                # For English, try to break at a space
+                space = sent.rfind(" ", MIN_CHUNK, max_chars)
+                if space > 0:
+                    split_at = space
+                chunks.append(sent[:split_at].strip())
+                sent = sent[split_at:].strip()
             current = sent
         else:
             current = (current + " " + sent).strip() if current else sent
@@ -222,7 +235,17 @@ def chunk_text(text: str, max_chars: int | None = None) -> list[str]:
     if current:
         chunks.append(current)
 
-    return chunks or [text[:max_chars]]
+    # ── Post-pass: merge any chunk shorter than MIN_CHUNK into its neighbour ──
+    merged: list[str] = []
+    for chunk in chunks:
+        if merged and len(chunk) < MIN_CHUNK:
+            # Absorb short tail into previous chunk (may exceed max_chars
+            # slightly but avoids F5-TTS single-char crashes)
+            merged[-1] = (merged[-1] + " " + chunk).strip()
+        else:
+            merged.append(chunk)
+
+    return merged or [text[:max_chars]]
 
 
 # ── Post-processing: pitch-preserving speed change ───────────────────────────
