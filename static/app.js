@@ -527,7 +527,7 @@ async function populateSelects() {
       const { job_id } = await apiFetch('/api/generate/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ voice_id: voiceId, document_id: docId, speed: parseFloat(speedIn.value), remove_silence: removeSilChk.checked }),
+        body: JSON.stringify({ voice_id: voiceId, document_id: docId, speed: parseFloat(speedIn.value), remove_silence: removeSilChk?.checked ?? false }),
       });
       await loadJobs();
       startPolling(job_id);
