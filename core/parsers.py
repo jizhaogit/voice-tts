@@ -9,17 +9,26 @@ def extract_text(file_path: str, original_name: str) -> str:
     path = Path(file_path)
 
     if ext == ".txt":
-        # Try common encodings in order of preference.
-        # Chinese files on Windows are often GBK / GB18030 (ANSI).
-        for enc in ("utf-8-sig", "utf-8", "gbk", "gb18030", "big5"):
+        # Detect encoding from BOM first, then try common Chinese encodings.
+        # Windows Notepad writes UTF-16 LE BOM (FF FE) or UTF-8 BOM (EF BB BF).
+        raw = path.read_bytes()
+        if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+            enc_order = ("utf-16",)          # has BOM — trust it
+        elif raw[:3] == b"\xef\xbb\xbf":
+            enc_order = ("utf-8-sig",)       # UTF-8 BOM
+        else:
+            enc_order = ("utf-8", "gbk", "gb18030", "big5", "cp936")
+
+        for enc in enc_order:
             try:
-                text = path.read_text(encoding=enc).strip()
-                if text:           # non-empty decode → accept
+                text = raw.decode(enc).lstrip("\ufeff").strip()
+                if text:
                     return text
             except (UnicodeDecodeError, LookupError):
                 continue
-        # Last resort — replace undecodable bytes with ?
-        return path.read_text(encoding="utf-8", errors="replace").strip()
+
+        # Final fallback — replace undecodable bytes rather than crash
+        return raw.decode("utf-8", errors="replace").strip()
 
     if ext == ".pdf":
         import pypdf

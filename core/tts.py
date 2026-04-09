@@ -196,8 +196,13 @@ def chunk_text(text: str, max_chars: int | None = None) -> list[str]:
 
     MIN_CHUNK = 8  # shorter than this → merge into the previous chunk
 
-    # Punctuation-only pattern — not speakable, causes F5-TTS tensor errors
-    _punct_only = re.compile(r'^[\s\W]+$', re.UNICODE)
+    def _has_speakable(s: str) -> bool:
+        """Return True if s contains at least one letter or digit.
+
+        Uses str.isalpha() / str.isdigit() which are unambiguous about CJK
+        characters — avoids regex \\W edge-cases with certain Unicode blocks.
+        """
+        return any(c.isalpha() or c.isdigit() for c in s)
 
     # Normalise line endings and whitespace
     text = re.sub(r'\r\n?', '\n', text).strip()
@@ -210,7 +215,7 @@ def chunk_text(text: str, max_chars: int | None = None) -> list[str]:
 
     for sent in raw_sentences:
         sent = sent.strip()
-        if not sent or _punct_only.match(sent):
+        if not sent or not _has_speakable(sent):
             continue
 
         if len(current) + len(sent) + 1 > max_chars:
@@ -382,10 +387,18 @@ def generate_speech(
     progress_cb(current_chunk, total_chunks) is called after each chunk.
     """
     tts = _get_tts()
+
+    # ── Debug: show what text arrived and what chunks were produced ───────────
+    char_count = len(gen_text)
+    preview    = gen_text[:80].replace('\n', '↵')
+    print(f"  gen_text: {char_count} chars — {preview!r}")
+
     chunks = chunk_text(gen_text)
     total = len(chunks)
-    print(f"  Text split into {total} chunk(s). "
-          f"First: {chunks[0][:60]!r}" if chunks else "  ⚠ No chunks produced — document may be empty or corrupt.")
+    if chunks:
+        print(f"  Chunks  : {total}  |  first={chunks[0][:60]!r}")
+    else:
+        print("  ⚠ No chunks produced — document may be empty or corrupt.")
     if not chunks:
         raise ValueError(
             "No speakable text found. The document may be empty, corrupt, "
