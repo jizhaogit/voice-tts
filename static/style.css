@@ -397,6 +397,139 @@ body {
   color: var(--info);
 }
 
+/* ── OR divider ──────────────────────────────────────────────────────── */
+
+.or-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  margin: 10px 0;
+}
+
+.or-divider::before,
+.or-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* ── Microphone recording ─────────────────────────────────────────────── */
+
+.record-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Idle state — the main record button */
+.btn-record {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 10px 18px;
+  font-size: 14px;
+  align-self: flex-start;
+  transition: all 0.15s;
+}
+
+.btn-record:hover:not(:disabled) {
+  border-color: #f85149;
+  color: #f85149;
+  background: rgba(248, 81, 73, 0.08);
+}
+
+.btn-record.recording {
+  border-color: #f85149;
+  color: #f85149;
+  background: rgba(248, 81, 73, 0.08);
+}
+
+.btn-record:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.record-btn-icon { font-size: 16px; }
+
+/* Active recording bar */
+.record-active {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: rgba(248, 81, 73, 0.07);
+  border: 1px solid rgba(248, 81, 73, 0.25);
+  border-radius: var(--radius);
+  flex-wrap: wrap;
+}
+
+.rec-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #f85149;
+  flex-shrink: 0;
+  animation: rec-blink 1s infinite;
+}
+
+@keyframes rec-blink {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px #f85149; }
+  50%       { opacity: 0.25; box-shadow: none; }
+}
+
+.rec-timer {
+  font-family: 'Courier New', monospace;
+  font-size: 16px;
+  font-weight: 700;
+  color: #f85149;
+  min-width: 38px;
+}
+
+.rec-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #f85149;
+}
+
+.rec-hint {
+  flex: 1;
+}
+
+/* Playback preview after stopping */
+.record-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 16px;
+  background: rgba(63, 185, 80, 0.06);
+  border: 1px solid rgba(63, 185, 80, 0.25);
+  border-radius: var(--radius);
+}
+
+.rec-audio {
+  width: 100%;
+  height: 36px;
+}
+
+.record-preview-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Success-toned ghost button */
+.btn-success {
+  color: var(--success) !important;
+  border-color: rgba(63, 185, 80, 0.4) !important;
+}
+
+.btn-success:hover:not(:disabled) {
+  background: rgba(63, 185, 80, 0.1) !important;
+}
+
 /* ── Ref-text header ─────────────────────────────────────────────────── */
 
 .ref-text-header {

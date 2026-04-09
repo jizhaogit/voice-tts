@@ -7,7 +7,9 @@
       "WebFetch(domain:github.com)",
       "Bash(npm install:*)",
       "Bash(npm run:*)",
-      "Bash(timeout 5 node index.js)"
+      "Bash(timeout 5 node index.js)",
+      "Bash(node --input-type=module)",
+      "Bash(node -e ':*)"
     ]
   }
 }

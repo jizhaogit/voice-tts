@@ -86,16 +86,136 @@ let voiceFile = null;
   const errEl       = document.getElementById('voice-error');
   const submitBtn   = document.getElementById('voice-submit');
 
+  // ── File upload drop zone ──────────────────────────────────────────────────
   setupDropZone(dropZone, fileInput, file => {
-    voiceFile = file;
-    dropPh.innerHTML = `
-      <div class="drop-icon">${file.name.match(/\.wav$/i) ? '🔊' : '🎤'}</div>
-      <div>${file.name}</div>
-      <div class="muted small">${fmtBytes(file.size)}</div>`;
-    transBtn.disabled = false;
+    setVoiceFile(file, file.name, fmtBytes(file.size));
+    resetRecordUI();
   });
 
-  // Auto-transcribe reference audio
+  // ── Shared helper: set voiceFile and update drop zone label ───────────────
+  function setVoiceFile(file, label, sublabel) {
+    voiceFile = file;
+    dropPh.innerHTML = `
+      <div class="drop-icon">🎵</div>
+      <div>${label}</div>
+      <div class="muted small">${sublabel}</div>`;
+    transBtn.disabled = false;
+  }
+
+  // ── Microphone recording ───────────────────────────────────────────────────
+  const recordBtn    = document.getElementById('record-btn');
+  const recordIdle   = document.getElementById('record-idle');
+  const recordActive = document.getElementById('record-active');
+  const recordPrev   = document.getElementById('record-preview');
+  const recStopBtn   = document.getElementById('rec-stop-btn');
+  const recUseBtn    = document.getElementById('rec-use-btn');
+  const recRedoBtn   = document.getElementById('rec-redo-btn');
+  const recTimer     = document.getElementById('rec-timer');
+  const recHint      = document.getElementById('rec-hint');
+  const recPlayback  = document.getElementById('rec-playback');
+
+  let mediaRecorder  = null;
+  let audioChunks    = [];
+  let recInterval    = null;
+  let recSeconds     = 0;
+  let recBlob        = null;
+  const MAX_SECONDS  = 30;
+
+  function fmtTime(s) {
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }
+
+  function resetRecordUI() {
+    show(recordIdle);
+    hide(recordActive);
+    hide(recordPrev);
+    recordBtn.classList.remove('recording');
+    recBlob = null;
+  }
+
+  // Check if browser supports recording
+  if (!navigator.mediaDevices || !window.MediaRecorder) {
+    recordBtn.disabled = true;
+    recordBtn.title = 'Your browser does not support microphone recording';
+    recordBtn.textContent = '🎙 Record (not supported in this browser)';
+  }
+
+  recordBtn.addEventListener('click', startRecording);
+  recStopBtn.addEventListener('click', stopRecording);
+
+  recRedoBtn.addEventListener('click', () => {
+    recPlayback.src = '';
+    recBlob = null;
+    resetRecordUI();
+  });
+
+  recUseBtn.addEventListener('click', () => {
+    if (!recBlob) return;
+    const mime = recBlob.type || 'audio/webm';
+    const ext  = mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'm4a' : 'webm';
+    const file = new File([recBlob], `mic-recording.${ext}`, { type: mime });
+    setVoiceFile(file, `🎙 Mic recording (${fmtTime(recSeconds)})`, `${fmtBytes(recBlob.size)} · recorded live`);
+    hide(recordPrev);
+    show(recordIdle);
+    recordBtn.innerHTML = '<span class="record-btn-icon">🎙</span> Re-record';
+  });
+
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+
+      // Pick a supported MIME type
+      const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4']
+        .find(m => MediaRecorder.isTypeSupported(m)) || '';
+
+      mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+      audioChunks   = [];
+
+      mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+
+      mediaRecorder.onstop = () => {
+        stream.getTracks().forEach(t => t.stop());
+        const finalMime = mediaRecorder.mimeType || 'audio/webm';
+        recBlob = new Blob(audioChunks, { type: finalMime });
+        recPlayback.src = URL.createObjectURL(recBlob);
+        hide(recordActive);
+        show(recordPrev);
+      };
+
+      mediaRecorder.start(100); // collect data every 100 ms
+      recSeconds = 0;
+      recTimer.textContent = '0:00';
+      recHint.textContent = '';
+      hide(recordIdle);
+      show(recordActive);
+      hide(recordPrev);
+      recordBtn.classList.add('recording');
+
+      recInterval = setInterval(() => {
+        recSeconds++;
+        recTimer.textContent = fmtTime(recSeconds);
+        if (recSeconds === 5)  recHint.textContent = 'Good — keep going…';
+        if (recSeconds === 15) recHint.textContent = '✓ Good length — you can stop now';
+        if (recSeconds >= MAX_SECONDS) stopRecording();
+      }, 1000);
+
+    } catch (err) {
+      if (err.name === 'NotAllowedError') {
+        showError(errEl, 'Microphone access denied. Please allow microphone permission and try again.');
+      } else {
+        showError(errEl, `Microphone error: ${err.message}`);
+      }
+    }
+  }
+
+  function stopRecording() {
+    clearInterval(recInterval);
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      mediaRecorder.stop();
+    }
+  }
+
+  // ── Auto-transcribe ────────────────────────────────────────────────────────
   transBtn.addEventListener('click', async () => {
     if (!voiceFile) return;
     transBtn.disabled = true;
@@ -117,11 +237,12 @@ let voiceFile = null;
     }
   });
 
+  // ── Form submit ────────────────────────────────────────────────────────────
   form.addEventListener('submit', async e => {
     e.preventDefault();
     hideError(errEl);
 
-    if (!voiceFile) { showError(errEl, 'Please select a reference audio file.'); return; }
+    if (!voiceFile) { showError(errEl, 'Please record or upload a reference audio file.'); return; }
     if (!refText.value.trim()) { showError(errEl, 'Reference text is required.'); return; }
 
     submitBtn.disabled = true;
@@ -136,14 +257,17 @@ let voiceFile = null;
 
     try {
       await apiFetch('/api/voices/', { method: 'POST', body: fd });
+      // Reset entire form
       form.reset();
       voiceFile = null;
       dropPh.innerHTML = `
-        <div class="drop-icon">🎤</div>
+        <div class="drop-icon">📁</div>
         <div>Click or drag &amp; drop audio file here</div>
         <div class="muted small">MP3 · WAV · M4A · OGG · FLAC · AAC</div>`;
       transBtn.disabled = true;
       hide(transStatus);
+      resetRecordUI();
+      recordBtn.innerHTML = '<span class="record-btn-icon">🎙</span> Record from Microphone';
       await loadVoices();
     } catch (err) {
       showError(errEl, err.message);

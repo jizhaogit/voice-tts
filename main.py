@@ -7,6 +7,12 @@ import webbrowser
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+# Ensure the project root is on sys.path so that `api/` and `core/` are importable
+# regardless of how Python was launched (embedded runtime, subprocess, etc.)
+_PROJECT_ROOT = Path(__file__).resolve().parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI

@@ -76,11 +76,40 @@
 
             <div class="form-group">
               <label>Reference Audio <span class="req">*</span></label>
-              <p class="hint">Upload a 3–15 second clear audio clip of the voice. No background noise or music.</p>
+              <p class="hint">Record 5–15 seconds of clear speech, or upload an existing audio file. No background noise or music.</p>
+
+              <!-- ── Record from microphone ── -->
+              <div class="record-section">
+                <div class="record-idle" id="record-idle">
+                  <button type="button" id="record-btn" class="btn btn-record">
+                    <span class="record-btn-icon">🎙</span> Record from Microphone
+                  </button>
+                </div>
+
+                <div class="record-active" id="record-active" style="display:none">
+                  <span class="rec-dot"></span>
+                  <span class="rec-label">Recording</span>
+                  <span class="rec-timer" id="rec-timer">0:00</span>
+                  <span class="rec-hint muted small" id="rec-hint"></span>
+                  <button type="button" id="rec-stop-btn" class="btn btn-ghost btn-sm">⏹ Stop</button>
+                </div>
+
+                <div class="record-preview" id="record-preview" style="display:none">
+                  <audio id="rec-playback" controls class="rec-audio"></audio>
+                  <div class="record-preview-actions">
+                    <button type="button" id="rec-use-btn" class="btn btn-ghost btn-sm btn-success">✓ Use This Recording</button>
+                    <button type="button" id="rec-redo-btn" class="btn btn-ghost btn-sm">↩ Re-record</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="or-divider"><span>or upload a file</span></div>
+
+              <!-- ── File upload ── -->
               <div class="drop-zone" id="voice-drop" tabindex="0">
                 <input type="file" id="voice-file" accept=".mp3,.wav,.m4a,.ogg,.flac,.aac" style="display:none" />
                 <div class="drop-placeholder" id="voice-drop-ph">
-                  <div class="drop-icon">🎤</div>
+                  <div class="drop-icon">📁</div>
                   <div>Click or drag &amp; drop audio file here</div>
                   <div class="muted small">MP3 · WAV · M4A · OGG · FLAC · AAC</div>
                 </div>

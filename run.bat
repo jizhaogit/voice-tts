@@ -180,6 +180,7 @@ echo    Keep this window open while using the app.
 echo    Press Ctrl+C to stop the server.
 echo.
 
+set PYTHONPATH=%~dp0;%PYTHONPATH%
 runtime\python.exe main.py %*
 
 echo.
