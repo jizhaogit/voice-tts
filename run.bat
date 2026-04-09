@@ -246,6 +246,12 @@ echo    Keep this window open while using the app.
 echo    Press Ctrl+C to stop the server.
 echo.
 
+:: ── Free port 7860 if another instance is still running ────────────────────
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":7860 " ^| findstr "LISTENING"') do (
+    echo  [..] Stopping previous instance on port 7860 ^(PID %%P^)...
+    taskkill /PID %%P /F >nul 2>&1
+)
+
 set PYTHONPATH=%~dp0;%PYTHONPATH%
 runtime\python.exe main.py %*
 
