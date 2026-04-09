@@ -645,10 +645,13 @@ function buildJobContent(job) {
       </div>
     </div>` : '';
 
+  const fmt = job.format || 'mp3';
+  const dlName = `${job.voice_name}-${job.document_name.replace(/\.[^.]+$/, '')}.${fmt}`
+    .replace(/\s+/g, '_').replace(/[/\\:*?"<>|]/g, '-');
   const audioHtml = job.status === 'ready' ? `
     <div class="job-audio">
       <audio controls class="audio-player" src="/api/generate/${job.id}/audio?inline=1"></audio>
-      <a class="btn btn-ghost btn-sm" href="/api/generate/${job.id}/audio" download>⬇ Download</a>
+      <a class="btn btn-ghost btn-sm" href="/api/generate/${job.id}/audio" download="${dlName}">⬇ Download</a>
     </div>` : '';
 
   const errorHtml = job.status === 'failed' ? `

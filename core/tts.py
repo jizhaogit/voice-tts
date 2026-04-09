@@ -201,9 +201,12 @@ def chunk_text(text: str, max_chars: int | None = None) -> list[str]:
     chunks: list[str] = []
     current = ""
 
+    # Punctuation-only pattern — these are not speakable and cause F5-TTS to crash
+    _punct_only = re.compile(r'^[\s\W]+$')
+
     for sent in raw_sentences:
         sent = sent.strip()
-        if not sent:
+        if not sent or _punct_only.match(sent):
             continue
         if len(current) + len(sent) + 1 > max_chars:
             if current:

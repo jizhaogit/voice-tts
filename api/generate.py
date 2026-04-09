@@ -4,6 +4,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+import urllib.parse
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -138,15 +140,28 @@ def download_audio(job_id: str, inline: bool = False):
 
     fmt = job.get("format", "mp3")
     media = "audio/mpeg" if fmt == "mp3" else "audio/wav"
-    safe = (
+    raw_name = (
         f"{job['voice_name']}-{Path(job['document_name']).stem}.{fmt}"
         .replace(" ", "_")
         .replace("/", "-")
     )
-    # inline=True → browser plays it; inline=False → triggers download
+
+    # HTTP headers are latin-1 only.  Voice / document names may contain
+    # Chinese, Japanese, etc.  Use RFC 5987 encoding so all characters work.
     disposition = "inline" if inline else "attachment"
-    return FileResponse(str(path), media_type=media, filename=safe,
-                        headers={"Content-Disposition": f'{disposition}; filename="{safe}"'})
+    try:
+        raw_name.encode("latin-1")          # pure ASCII / latin-1 → simple form
+        cd = f'{disposition}; filename="{raw_name}"'
+    except UnicodeEncodeError:
+        # Strip to ASCII for the fallback, keep full name in filename*
+        ascii_name = raw_name.encode("ascii", errors="ignore").decode() or f"audio.{fmt}"
+        encoded    = urllib.parse.quote(raw_name, safe="")
+        cd = f'{disposition}; filename="{ascii_name}"; filename*=UTF-8\'\'{encoded}'
+
+    # Do NOT pass filename= to FileResponse — it creates a duplicate
+    # Content-Disposition header that confuses browsers (wrong MIME / name).
+    return FileResponse(str(path), media_type=media,
+                        headers={"Content-Disposition": cd})
 
 
 @router.delete("/{job_id}")
