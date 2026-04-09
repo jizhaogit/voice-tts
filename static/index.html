@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Voice TTS Studio</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="logo-mark">◈</div>
+        <div class="logo-text">Voice TTS<br><span>Studio</span></div>
+      </div>
+      <nav class="sidebar-nav">
+        <button class="nav-item active" data-page="voices">
+          <span class="nav-icon">🎤</span>
+          <span class="nav-text">
+            <span class="nav-label">Voices</span>
+            <span class="nav-desc">Clone & manage voices</span>
+          </span>
+        </button>
+        <button class="nav-item" data-page="documents">
+          <span class="nav-icon">📄</span>
+          <span class="nav-text">
+            <span class="nav-label">Documents</span>
+            <span class="nav-desc">Import source text</span>
+          </span>
+        </button>
+        <button class="nav-item" data-page="generate">
+          <span class="nav-icon">🎵</span>
+          <span class="nav-text">
+            <span class="nav-label">Generate</span>
+            <span class="nav-desc">Create audio files</span>
+          </span>
+        </button>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="engine-badge">
+          <span class="engine-dot"></span>
+          <span>F5-TTS Engine</span>
+        </div>
+        <div class="engine-sub">EN · ZH · JA</div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main-content">
+      <!-- ── VOICES PAGE ──────────────────────────────────────── -->
+      <div id="page-voices" class="page active">
+        <div class="page-header">
+          <h1>Voice Models</h1>
+          <p class="muted">Upload a reference audio clip to create a zero-shot voice clone using F5-TTS. No GPU training required.</p>
+        </div>
+
+        <div class="card">
+          <h2>Create New Voice</h2>
+          <form id="voice-form" class="form">
+            <div class="form-row">
+              <div class="form-group">
+                <label>Voice Name <span class="req">*</span></label>
+                <input type="text" id="voice-name" placeholder="e.g. My Voice EN" required />
+              </div>
+              <div class="form-group">
+                <label>Language <span class="req">*</span></label>
+                <select id="voice-language">
+                  <option value="en">English</option>
+                  <option value="zh">Chinese (中文)</option>
+                  <option value="ja">Japanese (日本語) — experimental</option>
+                  <option value="auto">Auto-detect</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label>Reference Audio <span class="req">*</span></label>
+              <p class="hint">Upload a 3–15 second clear audio clip of the voice. No background noise or music.</p>
+              <div class="drop-zone" id="voice-drop" tabindex="0">
+                <input type="file" id="voice-file" accept=".mp3,.wav,.m4a,.ogg,.flac,.aac" style="display:none" />
+                <div class="drop-placeholder" id="voice-drop-ph">
+                  <div class="drop-icon">🎤</div>
+                  <div>Click or drag &amp; drop audio file here</div>
+                  <div class="muted small">MP3 · WAV · M4A · OGG · FLAC · AAC</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <div class="ref-text-header">
+                <label>Reference Text <span class="req">*</span></label>
+                <button type="button" class="btn btn-ghost btn-sm" id="transcribe-btn" disabled>
+                  🔍 Auto-transcribe
+                </button>
+              </div>
+              <p class="hint">Type the <strong>exact words</strong> spoken in the audio clip. Accuracy is crucial for voice quality.</p>
+              <textarea id="voice-ref-text" rows="3" placeholder="Type exactly what is spoken in the audio file..."></textarea>
+              <div id="transcribe-status" class="muted small" style="display:none"></div>
+            </div>
+
+            <div class="form-group">
+              <label>Description</label>
+              <input type="text" id="voice-desc" placeholder="Optional label" />
+            </div>
+
+            <div id="voice-progress" style="display:none" class="progress-wrap">
+              <div class="progress-bar"><div class="progress-fill" style="width:60%"></div></div>
+              <div class="progress-label muted small">Creating voice profile…</div>
+            </div>
+            <div id="voice-error" class="alert alert-error" style="display:none"></div>
+
+            <button type="submit" class="btn btn-primary" id="voice-submit">✨ Create Voice</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <h2>Your Voices <span class="count-badge" id="voice-count">0</span></h2>
+          <div id="voice-list"><p class="muted empty-state">No voices yet. Create your first voice above.</p></div>
+        </div>
+      </div>
+
+      <!-- ── DOCUMENTS PAGE ──────────────────────────────────────── -->
+      <div id="page-documents" class="page">
+        <div class="page-header">
+          <h1>Documents</h1>
+          <p class="muted">Upload documents to read aloud. Text is extracted locally — TXT, PDF, DOCX, HTML supported.</p>
+        </div>
+
+        <div class="card">
+          <h2>Upload Document</h2>
+          <form id="doc-form" class="form">
+            <div class="drop-zone" id="doc-drop" tabindex="0">
+              <input type="file" id="doc-file" accept=".txt,.pdf,.docx,.html,.htm" style="display:none" />
+              <div class="drop-placeholder" id="doc-drop-ph">
+                <div class="drop-icon">📄</div>
+                <div>Click or drag &amp; drop a document here</div>
+                <div class="muted small">TXT · PDF · DOCX · HTML — up to 50 MB</div>
+              </div>
+            </div>
+            <div id="doc-error" class="alert alert-error" style="display:none"></div>
+            <button type="submit" class="btn btn-primary" id="doc-submit">📤 Upload &amp; Extract Text</button>
+          </form>
+        </div>
+
+        <div class="split-layout">
+          <div class="card flex-grow">
+            <h2>Library <span class="count-badge" id="doc-count">0</span></h2>
+            <div id="doc-list"><p class="muted empty-state">No documents yet. Upload one above.</p></div>
+          </div>
+          <div class="card flex-grow preview-panel" id="doc-preview-panel" style="display:none">
+            <div class="preview-header">
+              <h2 class="preview-title" id="preview-title">Preview</h2>
+              <button class="btn btn-ghost btn-sm" id="preview-close">✕</button>
+            </div>
+            <div class="preview-body">
+              <pre class="preview-text" id="preview-text"></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── GENERATE PAGE ──────────────────────────────────────── -->
+      <div id="page-generate" class="page">
+        <div class="page-header">
+          <h1>Generate Audio</h1>
+          <p class="muted">Select a voice and document. F5-TTS will read it aloud using the cloned voice.</p>
+        </div>
+
+        <div class="card">
+          <h2>New Generation</h2>
+          <div id="gen-warnings"></div>
+          <form id="gen-form" class="form">
+            <div class="form-row">
+              <div class="form-group">
+                <label>Voice <span class="req">*</span></label>
+                <select id="gen-voice" required>
+                  <option value="">Select a voice…</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Document <span class="req">*</span></label>
+                <select id="gen-doc" required>
+                  <option value="">Select a document…</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group" style="max-width:320px">
+              <label>Speed &nbsp;<span id="speed-label" class="muted">1.0×</span></label>
+              <input type="range" id="gen-speed" min="0.5" max="2.0" step="0.05" value="1.0" class="speed-slider" />
+              <div class="speed-marks"><span>0.5×</span><span>1.0×</span><span>2.0×</span></div>
+            </div>
+            <div id="gen-error" class="alert alert-error" style="display:none"></div>
+            <div class="alert alert-info" id="model-note">
+              💡 The F5-TTS model (~1.2 GB) downloads automatically on the <strong>first generation</strong>. Subsequent runs are fast.
+            </div>
+            <button type="submit" class="btn btn-primary" id="gen-submit">🎵 Generate Audio</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <h2>History <span class="count-badge" id="job-count">0</span></h2>
+          <div id="job-list"><p class="muted empty-state">No generations yet.</p></div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
