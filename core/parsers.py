@@ -9,7 +9,17 @@ def extract_text(file_path: str, original_name: str) -> str:
     path = Path(file_path)
 
     if ext == ".txt":
-        return path.read_text(encoding="utf-8-sig").strip()
+        # Try common encodings in order of preference.
+        # Chinese files on Windows are often GBK / GB18030 (ANSI).
+        for enc in ("utf-8-sig", "utf-8", "gbk", "gb18030", "big5"):
+            try:
+                text = path.read_text(encoding=enc).strip()
+                if text:           # non-empty decode → accept
+                    return text
+            except (UnicodeDecodeError, LookupError):
+                continue
+        # Last resort — replace undecodable bytes with ?
+        return path.read_text(encoding="utf-8", errors="replace").strip()
 
     if ext == ".pdf":
         import pypdf

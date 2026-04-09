@@ -384,6 +384,14 @@ def generate_speech(
     tts = _get_tts()
     chunks = chunk_text(gen_text)
     total = len(chunks)
+    print(f"  Text split into {total} chunk(s). "
+          f"First: {chunks[0][:60]!r}" if chunks else "  ⚠ No chunks produced — document may be empty or corrupt.")
+    if not chunks:
+        raise ValueError(
+            "No speakable text found. The document may be empty, corrupt, "
+            "or encoded in a format that could not be read. "
+            "Please delete and re-upload the document."
+        )
     all_audio: list[np.ndarray] = []
     sample_rate = 24000
 
