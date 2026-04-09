@@ -312,65 +312,60 @@ def _infer_chunk(
     remove_silence: bool = False,
     _depth: int = 0,
 ) -> tuple[np.ndarray, int]:
-    """Infer a single text chunk; auto-splits on tensor-size mismatch.
+    """Infer one text chunk; retries with varied speeds and splits on mismatch.
 
-    F5-TTS occasionally raises:
-      RuntimeError: Sizes of tensors must match except in dimension 2.
-    This happens when the mel-spectrogram lengths of the reference audio and
-    the generated segment are incompatible.  The fix is to split the offending
-    chunk into two smaller pieces and try again (recursively, up to depth 4).
+    WHY speed-jitter works
+    ─────────────────────
+    F5-TTS computes the target mel duration as:
+        duration = ref_mel_len + round(ref_mel_len / ref_bytes * gen_bytes / speed)
+
+    When the reference text is long (360+ bytes for 120 Chinese chars) but the
+    gen chunk is short (< 30 chars = 90 bytes), the target_mel_len is tiny.
+    Due to block-padding inside the diffusion model, the actual output tensor
+    may not match this requested size → RuntimeError "Sizes of tensors must
+    match except in dimension 2."
+
+    Varying the speed slightly changes the computed duration, shifting it into
+    a block-aligned value. Trying 7 candidate speeds at each depth almost
+    always finds one that works without splitting.
     """
-    try:
-        audio_arr, sr, _ = tts.infer(
-            ref_file=ref_file,
-            ref_text=ref_text,
-            gen_text=gen_text,
-            speed=speed,
-            remove_silence=remove_silence,
-        )
-        return audio_arr.flatten(), sr
+    # Speeds to try at this depth — jitter around 1.0 in small steps
+    _SPEED_CANDIDATES = [1.0, 0.95, 1.05, 0.90, 1.10, 0.85, 1.15]
 
-    except RuntimeError as exc:
-        if "Sizes of tensors must match" not in str(exc):
-            raise
-        if _depth >= 4 or len(gen_text) <= 10:
-            # Can't split further — retry at speed=1.0 before giving up.
-            # Tensor-size mismatches are much more likely at extreme speeds
-            # (especially < 0.7) because the target duration calculation
-            # produces lengths that don't align with the model's expectations.
-            if speed != 1.0:
-                print(f"  ↳ retrying {len(gen_text)}-char chunk at speed=1.0")
-                try:
-                    audio_arr, sr, _ = tts.infer(
-                        ref_file=ref_file,
-                        ref_text=ref_text,
-                        gen_text=gen_text,
-                        speed=1.0,
-                        remove_silence=False,
-                    )
-                    return audio_arr.flatten(), sr
-                except Exception:
-                    pass
-            print(f"  ⚠ Skipping unresolvable chunk ({len(gen_text)} chars): {gen_text[:40]!r}")
-            return np.zeros(100, dtype=np.float32), 24000
+    for try_speed in _SPEED_CANDIDATES:
+        try:
+            audio_arr, sr, _ = tts.infer(
+                ref_file=ref_file,
+                ref_text=ref_text,
+                gen_text=gen_text,
+                speed=try_speed,
+                remove_silence=remove_silence,
+            )
+            return audio_arr.flatten(), sr
+        except RuntimeError as exc:
+            if "Sizes of tensors must match" not in str(exc):
+                raise   # unrelated error — propagate immediately
 
-        # Split at the nearest word boundary to the midpoint
-        mid = len(gen_text) // 2
-        split_at = gen_text.rfind(" ", 1, mid) or gen_text.find(" ", mid) or mid
-        left  = gen_text[:split_at].strip()
-        right = gen_text[split_at:].strip()
+    # All speed variants failed → split and recurse
+    if _depth >= 3 or len(gen_text) <= 4:
+        print(f"  ⚠ Skipping chunk ({len(gen_text)} chars): {gen_text[:40]!r}")
+        return np.zeros(100, dtype=np.float32), 24000
 
-        if not left or not right:
-            # No sensible split — hard-split
-            left, right = gen_text[:mid], gen_text[mid:]
+    # Split at the nearest word boundary (EN) or mid-point (CJK)
+    mid = len(gen_text) // 2
+    split_at = gen_text.rfind(" ", 1, mid) or gen_text.find(" ", mid) or mid
+    left  = gen_text[:split_at].strip()
+    right = gen_text[split_at:].strip()
+    if not left or not right:
+        left, right = gen_text[:mid], gen_text[mid:]
 
-        print(f"  ↳ tensor mismatch — splitting chunk into {len(left)} + {len(right)} chars")
-        arrays, sr = [], 24000
-        for part in (left, right):
-            arr, sr = _infer_chunk(tts, ref_file, ref_text, part, speed,
-                                   remove_silence, _depth + 1)
-            arrays.append(arr)
-        return np.concatenate(arrays), sr
+    print(f"  ↳ splitting chunk into {len(left)} + {len(right)} chars")
+    arrays, sr = [], 24000
+    for part in (left, right):
+        arr, sr = _infer_chunk(tts, ref_file, ref_text, part, speed,
+                               remove_silence, _depth + 1)
+        arrays.append(arr)
+    return np.concatenate(arrays), sr
 
 
 def generate_speech(
