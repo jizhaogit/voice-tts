@@ -212,6 +212,9 @@ if not exist "data\db.json" (
     echo {"voices":[],"documents":[],"jobs":[]}>data\db.json
 )
 
+:: ── Suppress HuggingFace symlink warning (Windows without Developer Mode) ──
+set HF_HUB_DISABLE_SYMLINKS_WARNING=1
+
 :: ════════════════════════════════════════════════════════
 :: STEP 4 — Launch the application
 :: ════════════════════════════════════════════════════════

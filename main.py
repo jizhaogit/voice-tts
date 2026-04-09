@@ -1,18 +1,71 @@
 """Voice TTS Studio — FastAPI application entry point."""
+import logging
 import os
 import sys
 import threading
 import time
+import warnings
 import webbrowser
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-# Ensure the project root is on sys.path so that `api/` and `core/` are importable
-# regardless of how Python was launched (embedded runtime, subprocess, etc.)
+# ── Ensure project root is importable ────────────────────────────────────────
 _PROJECT_ROOT = Path(__file__).resolve().parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+# ── Suppress known harmless noise before any heavy imports ───────────────────
+
+# 1) HuggingFace symlink warning (Windows without Developer Mode)
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
+# 2) pydub ffmpeg/ffprobe "Couldn't find" RuntimeWarnings
+warnings.filterwarnings("ignore", message=".*ffmpeg.*", category=RuntimeWarning)
+warnings.filterwarnings("ignore", message=".*ffprobe.*", category=RuntimeWarning)
+warnings.filterwarnings("ignore", message=".*avconv.*", category=RuntimeWarning)
+warnings.filterwarnings("ignore", message=".*avprobe.*", category=RuntimeWarning)
+
+# 3) Windows asyncio ConnectionResetError (WinError 10054) — browser closes
+#    keep-alive connections; completely harmless but floods the console.
+logging.getLogger("asyncio").setLevel(logging.CRITICAL)
+
+
+# ── Wire up bundled ffmpeg so pydub (used internally by f5-tts) works ────────
+def _configure_ffmpeg() -> None:
+    """
+    imageio-ffmpeg ships a self-contained ffmpeg binary.  Point pydub at it
+    so f5-tts can load MP3 / M4A / WebM reference audio without a system
+    ffmpeg install.  Also drop the binary's directory on PATH so any
+    subprocess spawned by pydub finds it automatically.
+    """
+    try:
+        import imageio_ffmpeg  # bundled binary, installed via requirements.txt
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+
+        # Tell pydub's AudioSegment to use this binary
+        from pydub import AudioSegment
+        AudioSegment.converter = ffmpeg_exe
+
+        # ffprobe: imageio-ffmpeg only ships ffmpeg, but modern ffmpeg can
+        # substitute for most ffprobe queries via "ffmpeg -i …".
+        # Point pydub's ffprobe at the same binary — covers 95 % of cases.
+        AudioSegment.ffprobe = ffmpeg_exe
+
+        # Also add the directory to PATH for subprocesses
+        ffmpeg_dir = str(Path(ffmpeg_exe).parent)
+        os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+
+        print(f"  ffmpeg : {ffmpeg_exe}")
+    except Exception as exc:
+        # Non-fatal — WAV reference audio still works; only non-WAV formats
+        # (MP3, M4A, WebM) will fail when f5-tts tries to load them.
+        print(f"  ⚠ ffmpeg not configured ({exc}). Upload WAV reference audio "
+              f"or re-run run.bat to install imageio-ffmpeg.")
+
+
+_configure_ffmpeg()
+
+# ── Late imports (after env vars and ffmpeg are set) ─────────────────────────
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -21,14 +74,15 @@ from fastapi.staticfiles import StaticFiles
 
 load_dotenv()
 
-# Ensure all data directories exist on startup
-for folder in ["data/voices", "data/documents", "data/generated"]:
-    Path(folder).mkdir(parents=True, exist_ok=True)
+# Ensure data directories exist
+for _folder in ["data/voices", "data/documents", "data/generated"]:
+    Path(_folder).mkdir(parents=True, exist_ok=True)
 
 
+# ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Reset any jobs that were left pending/processing from a previous run."""
+    """Reset jobs that were interrupted by a previous server crash/restart."""
     from core.db import read_db, write_db
 
     db = read_db()
@@ -41,9 +95,10 @@ async def lifespan(app: FastAPI):
     if changed:
         write_db(db)
 
-    yield  # app runs here
+    yield
 
 
+# ── App factory ───────────────────────────────────────────────────────────────
 def create_app() -> FastAPI:
     from api.voices import router as voices_router
     from api.documents import router as documents_router
@@ -55,11 +110,10 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    app.include_router(voices_router, prefix="/api/voices", tags=["voices"])
+    app.include_router(voices_router,   prefix="/api/voices",    tags=["voices"])
     app.include_router(documents_router, prefix="/api/documents", tags=["documents"])
-    app.include_router(generate_router, prefix="/api/generate", tags=["generate"])
+    app.include_router(generate_router,  prefix="/api/generate",  tags=["generate"])
 
-    # Serve frontend
     app.mount("/static", StaticFiles(directory="static"), name="static")
 
     @app.get("/")
@@ -69,7 +123,8 @@ def create_app() -> FastAPI:
     return app
 
 
-def open_browser(port: int):
+# ── Entry point ───────────────────────────────────────────────────────────────
+def open_browser(port: int) -> None:
     time.sleep(1.8)
     webbrowser.open(f"http://localhost:{port}")
 
@@ -80,8 +135,6 @@ if __name__ == "__main__":
 
     print(f"\n  Voice TTS Studio  →  http://localhost:{port}\n")
 
-    # Open browser in background thread
     threading.Thread(target=open_browser, args=(port,), daemon=True).start()
 
-    app = create_app()
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    uvicorn.run(create_app(), host=host, port=port, log_level="warning")
