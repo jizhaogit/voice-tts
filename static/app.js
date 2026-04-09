@@ -499,12 +499,13 @@ async function populateSelects() {
 }
 
 (function initGenerate() {
-  const form      = document.getElementById('gen-form');
-  const speedIn   = document.getElementById('gen-speed');
-  const speedLbl  = document.getElementById('speed-label');
-  const errEl     = document.getElementById('gen-error');
-  const submitBtn = document.getElementById('gen-submit');
-  const noteEl    = document.getElementById('model-note');
+  const form           = document.getElementById('gen-form');
+  const speedIn        = document.getElementById('gen-speed');
+  const speedLbl       = document.getElementById('speed-label');
+  const removeSilChk   = document.getElementById('gen-remove-silence');
+  const errEl          = document.getElementById('gen-error');
+  const submitBtn      = document.getElementById('gen-submit');
+  const noteEl         = document.getElementById('model-note');
 
   speedIn.addEventListener('input', () => {
     speedLbl.textContent = parseFloat(speedIn.value).toFixed(2) + '×';
@@ -526,7 +527,7 @@ async function populateSelects() {
       const { job_id } = await apiFetch('/api/generate/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ voice_id: voiceId, document_id: docId, speed: parseFloat(speedIn.value) }),
+        body: JSON.stringify({ voice_id: voiceId, document_id: docId, speed: parseFloat(speedIn.value), remove_silence: removeSilChk.checked }),
       });
       await loadJobs();
       startPolling(job_id);

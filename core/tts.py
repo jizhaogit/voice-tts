@@ -233,7 +233,7 @@ def _infer_chunk(
     ref_text: str,
     gen_text: str,
     speed: float,
-    remove_silence: bool,
+    remove_silence: bool = False,
     _depth: int = 0,
 ) -> tuple[np.ndarray, int]:
     """Infer a single text chunk; auto-splits on tensor-size mismatch.
@@ -258,7 +258,23 @@ def _infer_chunk(
         if "Sizes of tensors must match" not in str(exc):
             raise
         if _depth >= 4 or len(gen_text) <= 10:
-            # Give up splitting — skip this tiny piece rather than crash
+            # Can't split further — retry at speed=1.0 before giving up.
+            # Tensor-size mismatches are much more likely at extreme speeds
+            # (especially < 0.7) because the target duration calculation
+            # produces lengths that don't align with the model's expectations.
+            if speed != 1.0:
+                print(f"  ↳ retrying {len(gen_text)}-char chunk at speed=1.0")
+                try:
+                    audio_arr, sr, _ = tts.infer(
+                        ref_file=ref_file,
+                        ref_text=ref_text,
+                        gen_text=gen_text,
+                        speed=1.0,
+                        remove_silence=False,
+                    )
+                    return audio_arr.flatten(), sr
+                except Exception:
+                    pass
             print(f"  ⚠ Skipping unresolvable chunk ({len(gen_text)} chars): {gen_text[:40]!r}")
             return np.zeros(100, dtype=np.float32), 24000
 
@@ -286,7 +302,7 @@ def generate_speech(
     ref_text: str,
     gen_text: str,
     speed: float = 1.0,
-    remove_silence: bool = True,
+    remove_silence: bool = False,
     progress_cb: Callable[[int, int], None] | None = None,
 ) -> tuple[bytes, str]:
     """Generate speech audio from text using a reference voice.

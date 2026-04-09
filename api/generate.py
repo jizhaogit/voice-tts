@@ -20,6 +20,7 @@ class GenerateRequest(BaseModel):
     voice_id: str
     document_id: str
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    remove_silence: bool = False
 
 
 # ── Background job runner ────────────────────────────────────────────────────
@@ -32,7 +33,7 @@ def _update_job(job_id: str, updates: dict) -> None:
         write_db(db)
 
 
-def _run_job(job_id: str, voice: dict, text: str, speed: float) -> None:
+def _run_job(job_id: str, voice: dict, text: str, speed: float, remove_silence: bool = False) -> None:
     from core.tts import generate_speech
 
     def progress(current: int, total: int):
@@ -47,6 +48,7 @@ def _run_job(job_id: str, voice: dict, text: str, speed: float) -> None:
             ref_text=voice["ref_text"],
             gen_text=text,
             speed=speed,
+            remove_silence=remove_silence,
             progress_cb=progress,
         )
 
@@ -96,6 +98,7 @@ def create_job(req: GenerateRequest):
         "document_name": doc["original_name"],
         "language": voice.get("language", "en"),
         "speed": req.speed,
+        "remove_silence": req.remove_silence,
         "status": "pending",
         "total_chunks": 0,
         "processed_chunks": 0,
@@ -112,7 +115,7 @@ def create_job(req: GenerateRequest):
 
     text = doc["extracted_text"]
     threading.Thread(
-        target=_run_job, args=(job["id"], voice, text, req.speed), daemon=True
+        target=_run_job, args=(job["id"], voice, text, req.speed, req.remove_silence), daemon=True
     ).start()
 
     return {"job_id": job["id"], "status": "pending"}
