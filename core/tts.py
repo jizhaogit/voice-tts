@@ -428,14 +428,42 @@ def _infer_chunk(
     # formula produces a tiny gen contribution.  The U-Net block alignment
     # then has no valid speed solution.  Trimming ref_text to ≈2.5× gen_text
     # restores a sane ratio and usually makes speed=1.0 succeed immediately.
-    trimmed_ref = _trim_ref_text(ref_text, gen_text)
+    trimmed_ref = _trim_ref_text(ref_text, gen_text, factor=2.5)
     if trimmed_ref != ref_text:
         print(f"  ↳ ref_text trimmed {len(ref_text)}→{len(trimmed_ref)} chars to fix ratio")
         result = _try_speeds(trimmed_ref)
         if result:
             return result
 
-    # ── Pass 3: split chunk and recurse (last resort) ─────────────────────────
+    # ── Pass 3: ultra-aggressive trim + dense speed grid ─────────────────────
+    # When ref_bytes ≈ gen_bytes (factor≈1.0) and speed=1.0:
+    #   gen_mel ≈ ref_mel  →  total ≈ 2 × ref_mel  (always even, often block-aligned)
+    # Use a much denser speed grid to maximise the chance of landing on a
+    # duration that is divisible by the U-Net's internal block size.
+    ultra_ref = _trim_ref_text(ref_text, gen_text, factor=1.2)
+    if ultra_ref != trimmed_ref:
+        print(f"  ↳ ultra-trim ref_text {len(ref_text)}→{len(ultra_ref)} chars + dense speeds")
+        # Dense grid centred on 1.0 (most likely to give total = 2×ref_mel)
+        dense_speeds = [
+            1.00, 0.97, 1.03, 0.94, 1.06, 0.91, 1.09, 0.88, 1.12,
+            0.85, 1.15, 0.82, 1.18, 0.79, 1.21, 0.76, 1.24, 0.73, 1.27,
+            0.70, 1.30,
+        ]
+        for try_speed in dense_speeds:
+            try:
+                audio_arr, sr, _ = tts.infer(
+                    ref_file=ref_file,
+                    ref_text=ultra_ref,
+                    gen_text=gen_text,
+                    speed=try_speed,
+                    remove_silence=remove_silence,
+                )
+                return audio_arr.flatten(), sr
+            except RuntimeError as exc:
+                if "Sizes of tensors must match" not in str(exc):
+                    raise
+
+    # ── Pass 4: split chunk and recurse (last resort) ─────────────────────────
     if _depth >= 3 or len(gen_text) <= 4:
         print(f"  ⚠ Skipping unresolvable chunk ({len(gen_text)} chars): {gen_text[:40]!r}")
         return np.zeros(100, dtype=np.float32), 24000
