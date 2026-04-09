@@ -224,6 +224,60 @@ def chunk_text(text: str, max_chars: int | None = None) -> list[str]:
 
 # ── Core inference ────────────────────────────────────────────────────────────
 
+def _infer_chunk(
+    tts,
+    ref_file: str,
+    ref_text: str,
+    gen_text: str,
+    speed: float,
+    remove_silence: bool,
+    _depth: int = 0,
+) -> tuple[np.ndarray, int]:
+    """Infer a single text chunk; auto-splits on tensor-size mismatch.
+
+    F5-TTS occasionally raises:
+      RuntimeError: Sizes of tensors must match except in dimension 2.
+    This happens when the mel-spectrogram lengths of the reference audio and
+    the generated segment are incompatible.  The fix is to split the offending
+    chunk into two smaller pieces and try again (recursively, up to depth 4).
+    """
+    try:
+        audio_arr, sr, _ = tts.infer(
+            ref_file=ref_file,
+            ref_text=ref_text,
+            gen_text=gen_text,
+            speed=speed,
+            remove_silence=remove_silence,
+        )
+        return audio_arr.flatten(), sr
+
+    except RuntimeError as exc:
+        if "Sizes of tensors must match" not in str(exc):
+            raise
+        if _depth >= 4 or len(gen_text) <= 10:
+            # Give up splitting — skip this tiny piece rather than crash
+            print(f"  ⚠ Skipping unresolvable chunk ({len(gen_text)} chars): {gen_text[:40]!r}")
+            return np.zeros(100, dtype=np.float32), 24000
+
+        # Split at the nearest word boundary to the midpoint
+        mid = len(gen_text) // 2
+        split_at = gen_text.rfind(" ", 1, mid) or gen_text.find(" ", mid) or mid
+        left  = gen_text[:split_at].strip()
+        right = gen_text[split_at:].strip()
+
+        if not left or not right:
+            # No sensible split — hard-split
+            left, right = gen_text[:mid], gen_text[mid:]
+
+        print(f"  ↳ tensor mismatch — splitting chunk into {len(left)} + {len(right)} chars")
+        arrays, sr = [], 24000
+        for part in (left, right):
+            arr, sr = _infer_chunk(tts, ref_file, ref_text, part, speed,
+                                   remove_silence, _depth + 1)
+            arrays.append(arr)
+        return np.concatenate(arrays), sr
+
+
 def generate_speech(
     ref_audio_path: str,
     ref_text: str,
@@ -249,15 +303,11 @@ def generate_speech(
     wav_ref, wav_is_temp = _to_wav(ref_audio_path)
     try:
         for i, chunk in enumerate(chunks):
-            audio_arr, sr, _ = tts.infer(
-                ref_file=wav_ref,
-                ref_text=ref_text,
-                gen_text=chunk,
-                speed=speed,
-                remove_silence=remove_silence,
+            audio_arr, sr = _infer_chunk(
+                tts, wav_ref, ref_text, chunk, speed, remove_silence
             )
             sample_rate = sr
-            all_audio.append(audio_arr.flatten())
+            all_audio.append(audio_arr)
             if progress_cb:
                 progress_cb(i + 1, total)
     finally:
