@@ -5,7 +5,7 @@ No fine-tuning required: inference is zero-shot.
 
 Model download (~1.2 GB) happens automatically on first call to infer().
 """
-_TTS_VERSION = "2026-04-09-b"  # bump this to confirm which copy is running
+_TTS_VERSION = "2026-04-09-c"  # bump this to confirm which copy is running
 import io
 import os
 import re
@@ -185,32 +185,39 @@ def _get_tts():
 
 # ── Text chunking ─────────────────────────────────────────────────────────────
 
-def chunk_text(text: str, max_chars: int | None = None) -> list[str]:
+def chunk_text(
+    text: str,
+    max_chars: int | None = None,
+    min_chars: int | None = None,
+) -> list[str]:
     """Split text into chunks ≤ max_chars on sentence boundaries.
 
-    Handles English, Chinese (。！？), and Japanese (。！？) punctuation.
-    Guarantees no chunk shorter than MIN_CHUNK chars reaches F5-TTS, which
-    crashes on single characters.
+    Handles English, Chinese (。！？…), and Japanese (。！？) punctuation.
+    Also splits on newline runs so single stray characters on their own lines
+    (e.g. '的\n了' formatting artifacts in Chinese novels) are absorbed into
+    adjacent sentences rather than becoming orphan chunks.
+
+    min_chars controls the minimum size of any chunk produced.  Caller should
+    pass ``len(ref_text)`` so every chunk is at least as long as the voice
+    reference transcript — this is the key constraint for F5-TTS to produce
+    good audio without tensor-size mismatches.
     """
     if max_chars is None:
         max_chars = int(os.getenv("TTS_CHUNK_SIZE", 250))
 
-    MIN_CHUNK = 8  # shorter than this → merge into the previous chunk
-
     def _has_speakable(s: str) -> bool:
-        """Return True if s contains at least one letter or digit.
-
-        Uses str.isalpha() / str.isdigit() which are unambiguous about CJK
-        characters — avoids regex \\W edge-cases with certain Unicode blocks.
-        """
+        """Return True if s contains at least one letter or digit."""
         return any(c.isalpha() or c.isdigit() for c in s)
 
     # Normalise line endings and whitespace
     text = re.sub(r'\r\n?', '\n', text).strip()
 
-    # Split AFTER sentence-ending punctuation (EN + CJK)
-    raw_sentences = re.split(r'(?<=[.!?。！？])\s*', text)
+    # Split AFTER sentence-ending punctuation (EN + CJK) or at blank lines /
+    # newline runs.  This catches single-character lines like '的\n了' that
+    # appear as formatting artefacts in plain-text Chinese novels.
+    raw_sentences = re.split(r'(?<=[.!?。！？…])\s*|\n+', text)
 
+    # ── First pass: accumulate sentences into max_chars chunks ────────────────
     chunks: list[str] = []
     current = ""
 
@@ -223,13 +230,11 @@ def chunk_text(text: str, max_chars: int | None = None) -> list[str]:
             if current:
                 chunks.append(current)
                 current = ""
-            # Sentence itself is longer than max_chars — hard-split at word
-            # boundaries (EN) or fixed width (CJK).  Ensure no leftover is
-            # shorter than MIN_CHUNK by absorbing it into the last split piece.
+            # Sentence itself longer than max_chars — hard-split
             while len(sent) > max_chars:
                 split_at = max_chars
-                # For English, try to break at a space
-                space = sent.rfind(" ", MIN_CHUNK, max_chars)
+                # For English, prefer a space boundary
+                space = sent.rfind(" ", max(1, max_chars // 4), max_chars)
                 if space > 0:
                     split_at = space
                 chunks.append(sent[:split_at].strip())
@@ -241,19 +246,31 @@ def chunk_text(text: str, max_chars: int | None = None) -> list[str]:
     if current:
         chunks.append(current)
 
-    # ── Post-pass: merge any chunk shorter than MIN_CHUNK into its neighbour ──
+    # ── Second pass: merge short chunks so every output ≥ min_chars ──────────
+    # F5-TTS needs gen_text to be at least as long as ref_text (in characters)
+    # to produce a mel-duration that the U-Net block alignment can satisfy.
+    # We merge forward (accumulate into a buffer and flush when big enough) so
+    # even the very first chunk ends up long enough.
+    MIN_CHUNK = min_chars if min_chars is not None else 40
+
     merged: list[str] = []
+    buf = ""
     for chunk in chunks:
-        if merged and len(chunk) < MIN_CHUNK:
-            # Absorb short tail into previous chunk (may exceed max_chars
-            # slightly but avoids F5-TTS single-char crashes)
-            merged[-1] = (merged[-1] + " " + chunk).strip()
-        else:
-            merged.append(chunk)
+        buf = (buf + " " + chunk).strip() if buf else chunk
+        if len(buf) >= MIN_CHUNK:
+            merged.append(buf)
+            buf = ""
+
+    # Flush any leftover that never reached MIN_CHUNK
+    if buf:
+        if merged:
+            # Absorb into the last chunk (may push it slightly over max_chars,
+            # but avoids sending a tiny fragment to F5-TTS)
+            merged[-1] = (merged[-1] + " " + buf).strip()
+        elif _has_speakable(buf):
+            merged.append(buf)   # only content in the document — keep it
 
     # Only fall back to raw text if it contains speakable content.
-    # Never return a chunk that is purely punctuation/whitespace — it would
-    # reach F5-TTS and either crash or produce silence.
     if not merged:
         raw_fallback = text[:max_chars].strip()
         if _has_speakable(raw_fallback):
@@ -506,7 +523,15 @@ def generate_speech(
     preview    = gen_text[:80].replace('\n', '↵')
     print(f"  gen_text: {char_count} chars — {preview!r}")
 
-    chunks = chunk_text(gen_text)
+    # Each chunk must be at least as long as ref_text so the F5-TTS
+    # mel-duration formula produces a gen contribution that is large enough
+    # for the U-Net block alignment to be satisfiable at a normal speed.
+    # Cap at max_chars//2 so we don't create chunks that are too huge.
+    max_chars   = int(os.getenv("TTS_CHUNK_SIZE", 250))
+    min_chunk   = max(40, min(max_chars // 2, len(ref_text)))
+    print(f"  ref_text: {len(ref_text)} chars → min_chunk={min_chunk}")
+
+    chunks = chunk_text(gen_text, max_chars=max_chars, min_chars=min_chunk)
     total = len(chunks)
     if chunks:
         print(f"  Chunks  : {total}  |  first={chunks[0][:60]!r}")
