@@ -8,6 +8,8 @@ Model download (~1.2 GB) happens automatically on first call to infer().
 import io
 import os
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Callable
 
@@ -15,6 +17,68 @@ import numpy as np
 
 # Lazy-loaded singletons
 _tts_instance = None
+
+
+# ── ffmpeg helpers ────────────────────────────────────────────────────────────
+
+def _get_ffmpeg_exe() -> str | None:
+    """Return the full path to a working ffmpeg binary, or None.
+
+    Tries imageio-ffmpeg (bundled pip package) first, then falls back to the
+    copy that main.py places in runtime\ffmpeg.exe.  We intentionally do NOT
+    rely on PATH so that Whisper / torchaudio subprocess calls work regardless
+    of whether the directory was added to the environment.
+    """
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except ImportError:
+        pass
+
+    # Fallback: main.py copies the binary here on startup
+    runtime_ffmpeg = Path(__file__).parent.parent / "runtime" / "ffmpeg.exe"
+    if runtime_ffmpeg.exists():
+        return str(runtime_ffmpeg)
+
+    return None
+
+
+def _to_wav(audio_path: str, target_sr: int = 24000) -> tuple[str, bool]:
+    """Convert any audio file to a 24 kHz mono WAV using the bundled ffmpeg.
+
+    WAV files are returned as-is.  For any other format (MP3, M4A, WebM, OGG,
+    FLAC, AAC …) we call ffmpeg by its *full path* — no PATH lookup, so
+    WinError 2 cannot occur.
+
+    Returns:
+        (path_to_wav, is_temp)
+        is_temp=True  → caller must delete the file when done.
+        is_temp=False → caller must NOT delete (it's the original file).
+    """
+    src = Path(audio_path)
+    if src.suffix.lower() == ".wav":
+        return audio_path, False
+
+    ffmpeg_exe = _get_ffmpeg_exe()
+    if ffmpeg_exe is None:
+        # No ffmpeg available at all — pass original path and hope the
+        # downstream library can handle it (e.g. soundfile with native codec).
+        print("  ⚠ ffmpeg not found — attempting to use audio as-is. "
+              "Re-run run.bat to install imageio-ffmpeg.")
+        return audio_path, False
+
+    tmp_wav = Path(tempfile.mktemp(suffix=".wav"))
+    try:
+        subprocess.run(
+            [ffmpeg_exe, "-y", "-i", str(src),
+             "-ar", str(target_sr), "-ac", "1", "-f", "wav", str(tmp_wav)],
+            capture_output=True,
+            check=True,
+        )
+        return str(tmp_wav), True
+    except Exception as exc:
+        print(f"  ⚠ Audio conversion to WAV failed: {exc}")
+        return audio_path, False
 
 
 def _print_cuda_warning(err: Exception, torch) -> None:
@@ -179,18 +243,26 @@ def generate_speech(
     all_audio: list[np.ndarray] = []
     sample_rate = 24000
 
-    for i, chunk in enumerate(chunks):
-        audio_arr, sr, _ = tts.infer(
-            ref_file=ref_audio_path,
-            ref_text=ref_text,
-            gen_text=chunk,
-            speed=speed,
-            remove_silence=remove_silence,
-        )
-        sample_rate = sr
-        all_audio.append(audio_arr.flatten())
-        if progress_cb:
-            progress_cb(i + 1, total)
+    # Convert reference audio to WAV up-front using the bundled ffmpeg binary
+    # (full path — no PATH lookup).  This prevents [WinError 2] from torchaudio
+    # or f5-tts trying to shell out to 'ffmpeg' by name for non-WAV formats.
+    wav_ref, wav_is_temp = _to_wav(ref_audio_path)
+    try:
+        for i, chunk in enumerate(chunks):
+            audio_arr, sr, _ = tts.infer(
+                ref_file=wav_ref,
+                ref_text=ref_text,
+                gen_text=chunk,
+                speed=speed,
+                remove_silence=remove_silence,
+            )
+            sample_rate = sr
+            all_audio.append(audio_arr.flatten())
+            if progress_cb:
+                progress_cb(i + 1, total)
+    finally:
+        if wav_is_temp:
+            Path(wav_ref).unlink(missing_ok=True)
 
     combined: np.ndarray = np.concatenate(all_audio) if len(all_audio) > 1 else all_audio[0]
 
@@ -227,7 +299,14 @@ def transcribe_audio(audio_path: str, language: str = "en") -> str:
     """
     import whisper
 
-    model = whisper.load_model("base")
-    lang = language if language != "auto" else None
-    result = model.transcribe(audio_path, language=lang)
-    return result["text"].strip()
+    # Whisper calls ffmpeg by name via subprocess for non-WAV files.
+    # Convert first using the full ffmpeg path to avoid [WinError 2].
+    wav_path, wav_is_temp = _to_wav(audio_path)
+    try:
+        model = whisper.load_model("base")
+        lang = language if language != "auto" else None
+        result = model.transcribe(wav_path, language=lang)
+        return result["text"].strip()
+    finally:
+        if wav_is_temp:
+            Path(wav_path).unlink(missing_ok=True)
