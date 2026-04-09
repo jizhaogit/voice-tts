@@ -24,10 +24,33 @@ def _get_tts():
         from f5_tts.api import F5TTS
 
         model_name = os.getenv("F5_MODEL", "F5TTS_v1_Base")
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        if torch.cuda.is_available():
+            # Quick sanity-check before loading the full model:
+            # catches "no kernel image" / CUDA version mismatches early.
+            try:
+                torch.zeros(1, device="cuda")
+                device = "cuda"
+            except Exception as cuda_err:
+                print(f"  ⚠ CUDA unavailable ({cuda_err.__class__.__name__}: {cuda_err})")
+                print("  → Falling back to CPU. To fix, re-run run.bat so PyTorch")
+                print("    is reinstalled with the correct CUDA build for your GPU.")
+                device = "cpu"
+        else:
+            device = "cpu"
+
         print(f"  Loading F5-TTS ({model_name}) on {device}...")
-        _tts_instance = F5TTS(model=model_name, device=device)
-        print("  F5-TTS ready.")
+        try:
+            _tts_instance = F5TTS(model=model_name, device=device)
+        except Exception:
+            if device == "cuda":
+                # Model load itself failed on GPU — try CPU as last resort
+                print("  ⚠ Model failed to load on GPU, retrying on CPU...")
+                _tts_instance = F5TTS(model=model_name, device="cpu")
+            else:
+                raise
+
+        print(f"  F5-TTS ready ({device.upper()}).")
     return _tts_instance
 
 

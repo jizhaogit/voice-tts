@@ -100,27 +100,51 @@ echo.
 
 :check_packages
 runtime\python.exe -c "import f5_tts" >nul 2>&1
-if %ERRORLEVEL%==0 (
-    echo  [OK] Packages already installed.
-    echo.
-    goto :setup_env
-)
+if %ERRORLEVEL% neq 0 goto :install_packages
 
-echo  [..] Installing packages — this takes several minutes the first time...
-echo.
-
-:: ── PyTorch: GPU vs CPU ───────────────────────────────────
+:: ── CUDA compatibility check (catches version mismatch on existing installs) ─
 nvidia-smi >nul 2>&1
 if %ERRORLEVEL%==0 (
-    echo  [GPU] NVIDIA GPU detected — installing PyTorch with CUDA 12.1 ^(~2.5 GB^)...
-    runtime\python.exe -m pip install torch torchaudio ^
-        --index-url https://download.pytorch.org/whl/cu121 ^
-        --no-warn-script-location --quiet
+    runtime\python.exe -c "import torch; torch.zeros(1).cuda()" >nul 2>&1
+    if %ERRORLEVEL% neq 0 (
+        echo  [!] PyTorch CUDA mismatch detected -- reinstalling with correct build...
+        echo.
+        goto :install_packages
+    )
+)
+echo  [OK] Packages already installed.
+echo.
+goto :setup_env
+
+:install_packages
+echo  [..] Installing packages -- this takes several minutes the first time...
+echo.
+
+:: ── Detect exact CUDA version and pick matching PyTorch build ─────────────────
+:: PowerShell reads nvidia-smi, extracts "CUDA Version: X.Y", maps to whl tag.
+:: Result: cu128 / cu124 / cu121 / cu118 / cpu
+set "TORCH_IDX=cpu"
+nvidia-smi >nul 2>&1
+if %ERRORLEVEL%==0 (
+    for /f "delims=" %%T in ('powershell -NoProfile -Command ^
+        "$t=\"cpu\"; try { $s=(nvidia-smi 2>&1 | Out-String); $m=[regex]::Match($s,\"CUDA Version:\s*(\d+)\.(\d+)\"); if($m.Success){ $ma=[int]$m.Groups[1].Value; $mi=[int]$m.Groups[2].Value; if($ma -ge 12){ if($mi -ge 8){$t=\"cu128\"}elseif($mi -ge 4){$t=\"cu124\"}else{$t=\"cu121\"} }elseif($ma -ge 11){ $t=\"cu118\" } } } catch {}; $t"') do set "TORCH_IDX=%%T"
+)
+
+if "%TORCH_IDX%"=="cpu" (
+    echo  [CPU] No compatible GPU found -- installing PyTorch CPU build ^(~200 MB^)...
 ) else (
-    echo  [CPU] No GPU detected — installing PyTorch CPU build ^(~200 MB^)...
+    echo  [GPU] GPU detected -- installing PyTorch %TORCH_IDX% build ^(~2.5 GB^)...
+)
+
+runtime\python.exe -m pip install torch torchaudio ^
+    --index-url https://download.pytorch.org/whl/%TORCH_IDX% ^
+    --no-warn-script-location --quiet
+if %ERRORLEVEL% neq 0 (
+    echo  [!] GPU build failed -- falling back to CPU build...
     runtime\python.exe -m pip install torch torchaudio ^
         --index-url https://download.pytorch.org/whl/cpu ^
         --no-warn-script-location --quiet
+    set "TORCH_IDX=cpu"
 )
 
 :: ── Application dependencies ──────────────────────────────
@@ -141,7 +165,7 @@ if %ERRORLEVEL% neq 0 (
 )
 
 echo.
-echo  [OK] All packages installed and verified.
+echo  [OK] All packages installed and verified ^(%TORCH_IDX%^).
 echo.
 
 :: ════════════════════════════════════════════════════════
