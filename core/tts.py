@@ -5,7 +5,7 @@ No fine-tuning required: inference is zero-shot.
 
 Model download (~1.2 GB) happens automatically on first call to infer().
 """
-_TTS_VERSION = "2026-04-09-a"  # bump this to confirm which copy is running
+_TTS_VERSION = "2026-04-09-b"  # bump this to confirm which copy is running
 import io
 import os
 import re
@@ -317,6 +317,47 @@ def _apply_speed(audio: np.ndarray, sample_rate: int, speed: float) -> np.ndarra
 
 # ── Core inference ────────────────────────────────────────────────────────────
 
+def _trim_ref_text(ref_text: str, gen_text: str, factor: float = 2.5) -> str:
+    """Shorten ref_text so its UTF-8 byte length ≤ factor × gen_text bytes.
+
+    WHY THIS MATTERS
+    ────────────────
+    F5-TTS estimates the target mel duration as:
+        total = ref_mel + round(ref_mel / ref_bytes × gen_bytes / speed)
+
+    When ref_bytes >> gen_bytes (long ref transcript, short gen chunk), the
+    gen portion of the duration is tiny.  The diffusion U-Net requires the
+    total duration to be block-aligned (divisible by 2^n).  With a tiny gen
+    contribution, no speed value in the normal 0.5–2.0 range hits a valid
+    alignment → RuntimeError "Sizes of tensors must match…"
+
+    Trimming ref_text makes ref_bytes ≈ factor × gen_bytes.  At factor=2.5
+    and speed=1.0 the ratio becomes reasonable and block-alignment is usually
+    satisfied immediately.  Voice quality is largely preserved because F5-TTS
+    captures timbre from the mel-spectrogram of the audio, not text alignment.
+
+    Cuts at the last sentence-ending punctuation within the byte budget so the
+    trimmed text still ends cleanly.
+    """
+    gen_bytes = len(gen_text.encode("utf-8"))
+    ref_bytes = len(ref_text.encode("utf-8"))
+    target_bytes = int(gen_bytes * factor)
+
+    if ref_bytes <= target_bytes:
+        return ref_text  # already within budget — no change needed
+
+    # Slice UTF-8 bytes, then decode safely (ignore any partial multi-byte char)
+    shortened = ref_text.encode("utf-8")[:target_bytes].decode("utf-8", errors="ignore").strip()
+
+    # Prefer ending at a sentence boundary so the trimmed text reads cleanly
+    for punct in ("。", "！", "？", "…", ".", "!", "?"):
+        cut = shortened.rfind(punct)
+        if cut >= max(4, len(shortened) // 2):
+            return shortened[: cut + 1].strip()
+
+    return shortened or ref_text[:20]
+
+
 def _infer_chunk(
     tts,
     ref_file: str,
@@ -360,23 +401,43 @@ def _infer_chunk(
     # Speeds to try — jitter covers ±40 % to find a block-aligned mel length
     _SPEED_CANDIDATES = [1.0, 0.85, 1.15, 0.70, 1.30, 0.55, 1.50]
 
-    for try_speed in _SPEED_CANDIDATES:
-        try:
-            audio_arr, sr, _ = tts.infer(
-                ref_file=ref_file,
-                ref_text=ref_text,
-                gen_text=gen_text,
-                speed=try_speed,
-                remove_silence=remove_silence,
-            )
-            return audio_arr.flatten(), sr
-        except RuntimeError as exc:
-            if "Sizes of tensors must match" not in str(exc):
-                raise   # unrelated error — propagate immediately
+    def _try_speeds(use_ref_text: str) -> tuple[np.ndarray, int] | None:
+        """Return (audio, sr) if any speed candidate succeeds, else None."""
+        for try_speed in _SPEED_CANDIDATES:
+            try:
+                audio_arr, sr, _ = tts.infer(
+                    ref_file=ref_file,
+                    ref_text=use_ref_text,
+                    gen_text=gen_text,
+                    speed=try_speed,
+                    remove_silence=remove_silence,
+                )
+                return audio_arr.flatten(), sr
+            except RuntimeError as exc:
+                if "Sizes of tensors must match" not in str(exc):
+                    raise   # unrelated error — propagate immediately
+        return None
 
-    # All speed variants failed → split and recurse
+    # ── Pass 1: try with original ref_text ───────────────────────────────────
+    result = _try_speeds(ref_text)
+    if result:
+        return result
+
+    # ── Pass 2: trim ref_text to fix ref/gen byte-length imbalance ───────────
+    # When ref_text is much longer than gen_text, the F5-TTS mel-duration
+    # formula produces a tiny gen contribution.  The U-Net block alignment
+    # then has no valid speed solution.  Trimming ref_text to ≈2.5× gen_text
+    # restores a sane ratio and usually makes speed=1.0 succeed immediately.
+    trimmed_ref = _trim_ref_text(ref_text, gen_text)
+    if trimmed_ref != ref_text:
+        print(f"  ↳ ref_text trimmed {len(ref_text)}→{len(trimmed_ref)} chars to fix ratio")
+        result = _try_speeds(trimmed_ref)
+        if result:
+            return result
+
+    # ── Pass 3: split chunk and recurse (last resort) ─────────────────────────
     if _depth >= 3 or len(gen_text) <= 4:
-        print(f"  ⚠ Skipping chunk ({len(gen_text)} chars): {gen_text[:40]!r}")
+        print(f"  ⚠ Skipping unresolvable chunk ({len(gen_text)} chars): {gen_text[:40]!r}")
         return np.zeros(100, dtype=np.float32), 24000
 
     # Split at the nearest word boundary (EN) or mid-point (CJK)
