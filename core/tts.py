@@ -17,6 +17,67 @@ import numpy as np
 _tts_instance = None
 
 
+def _print_cuda_warning(err: Exception, torch) -> None:
+    """Print a targeted fix hint based on the CUDA error type."""
+    msg = str(err)
+    print(f"\n  {'='*60}")
+    print(f"  ⚠  CUDA ERROR: {err.__class__.__name__}")
+    print(f"  {'='*60}")
+
+    if "no kernel image" in msg.lower():
+        # Classic architecture mismatch — common with brand-new GPUs
+        gpu_name = "unknown GPU"
+        try:
+            gpu_name = torch.cuda.get_device_name(0)
+            props = torch.cuda.get_device_properties(0)
+            gpu_name = f"{gpu_name} (sm_{props.major}{props.minor})"
+        except Exception:
+            pass
+        torch_ver = getattr(torch, "__version__", "?")
+        cuda_built = getattr(torch.version, "cuda", "?")
+        print(f"  GPU   : {gpu_name}")
+        print(f"  PyTorch {torch_ver} was built for CUDA {cuda_built}")
+        print(f"  → This GPU's architecture is not supported by that build.")
+        print()
+        if "sm_10" in gpu_name or "sm_9" in gpu_name:
+            print("  FIX: You have an RTX 50xx / RTX 40xx (Blackwell / Ada) GPU.")
+            print("       Re-run  run.bat  — it will install PyTorch 2.7+ cu128")
+            print("       which adds sm_100 (Blackwell) kernel support.")
+        else:
+            print("  FIX: Re-run  run.bat  — it will detect your GPU and install")
+            print("       the correct PyTorch CUDA build automatically.")
+    elif "out of memory" in msg.lower():
+        print("  GPU ran out of VRAM. Falling back to CPU for this session.")
+        print("  Try a shorter document or reduce chunk size in .env:")
+        print("    TTS_CHUNK_SIZE=150")
+    else:
+        print(f"  Detail: {msg}")
+        print("  Falling back to CPU. Re-run run.bat to repair GPU support.")
+
+    print(f"  {'='*60}\n")
+
+
+def _warn_if_gpu_present(torch) -> None:
+    """Warn when CUDA is unavailable despite an NVIDIA GPU being present."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5
+        )
+        gpu_name = result.stdout.strip()
+        if result.returncode == 0 and gpu_name:
+            cuda_built = getattr(torch.version, "cuda", None)
+            print(f"\n  ⚠  GPU detected ({gpu_name}) but PyTorch cannot use it.")
+            if cuda_built is None:
+                print("     A CPU-only PyTorch build is installed.")
+            else:
+                print(f"     PyTorch CUDA build: {cuda_built}")
+            print("     Re-run  run.bat  to reinstall the GPU-compatible build.\n")
+    except Exception:
+        pass  # nvidia-smi not found = genuine CPU-only machine, stay silent
+
+
 def _get_tts():
     global _tts_instance
     if _tts_instance is None:
@@ -26,17 +87,20 @@ def _get_tts():
         model_name = os.getenv("F5_MODEL", "F5TTS_v1_Base")
 
         if torch.cuda.is_available():
-            # Quick sanity-check before loading the full model:
-            # catches "no kernel image" / CUDA version mismatches early.
+            # Quick sanity-check before loading the full model.
+            # Catches "no kernel image" (architecture mismatch) and other
+            # CUDA runtime errors before we waste time loading weights.
             try:
                 torch.zeros(1, device="cuda")
                 device = "cuda"
             except Exception as cuda_err:
-                print(f"  ⚠ CUDA unavailable ({cuda_err.__class__.__name__}: {cuda_err})")
-                print("  → Falling back to CPU. To fix, re-run run.bat so PyTorch")
-                print("    is reinstalled with the correct CUDA build for your GPU.")
+                _print_cuda_warning(cuda_err, torch)
                 device = "cpu"
         else:
+            # torch.cuda.is_available() == False can mean either:
+            #   (a) no NVIDIA GPU present — normal CPU machine
+            #   (b) CPU-only PyTorch was installed despite having a GPU
+            _warn_if_gpu_present(torch)
             device = "cpu"
 
         print(f"  Loading F5-TTS ({model_name}) on {device}...")

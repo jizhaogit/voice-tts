@@ -9,7 +9,8 @@
       "Bash(npm run:*)",
       "Bash(timeout 5 node index.js)",
       "Bash(node --input-type=module)",
-      "Bash(node -e ':*)"
+      "Bash(node -e ':*)",
+      "Bash(python -c ':*)"
     ]
   }
 }

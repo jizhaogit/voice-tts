@@ -132,10 +132,33 @@ if %ERRORLEVEL%==0 (
 
 if "%TORCH_IDX%"=="cpu" (
     echo  [CPU] No compatible GPU found -- installing PyTorch CPU build ^(~200 MB^)...
-) else (
-    echo  [GPU] GPU detected -- installing PyTorch %TORCH_IDX% build ^(~2.5 GB^)...
+    runtime\python.exe -m pip install torch torchaudio ^
+        --index-url https://download.pytorch.org/whl/cpu ^
+        --no-warn-script-location --quiet
+    goto :after_torch
 )
 
+echo  [GPU] GPU detected -- installing PyTorch %TORCH_IDX% build ^(~2.5 GB^)...
+
+:: ── cu128 = Blackwell / RTX 50xx — needs PyTorch 2.7+ for sm_100 kernels ────
+if "%TORCH_IDX%"=="cu128" (
+    echo  [..] RTX 50xx ^(Blackwell^) detected -- requiring PyTorch ^>=2.7 for sm_100 support...
+    runtime\python.exe -m pip install "torch>=2.7.0" torchaudio ^
+        --index-url https://download.pytorch.org/whl/cu128 ^
+        --no-warn-script-location --quiet
+
+    :: Quick GPU smoke-test
+    runtime\python.exe -c "import torch; torch.zeros(1).cuda()" >nul 2>&1
+    if %ERRORLEVEL% neq 0 (
+        echo  [!] Stable cu128 did not pass GPU test -- trying PyTorch nightly build...
+        runtime\python.exe -m pip install --pre torch torchaudio ^
+            --index-url https://download.pytorch.org/whl/nightly/cu128 ^
+            --no-warn-script-location --quiet
+    )
+    goto :after_torch
+)
+
+:: ── All other CUDA versions (cu121 / cu124 / cu118) ──────────────────────────
 runtime\python.exe -m pip install torch torchaudio ^
     --index-url https://download.pytorch.org/whl/%TORCH_IDX% ^
     --no-warn-script-location --quiet
@@ -146,6 +169,8 @@ if %ERRORLEVEL% neq 0 (
         --no-warn-script-location --quiet
     set "TORCH_IDX=cpu"
 )
+
+:after_torch
 
 :: ── Application dependencies ──────────────────────────────
 echo  [..] Installing application dependencies...
