@@ -225,6 +225,59 @@ def chunk_text(text: str, max_chars: int | None = None) -> list[str]:
     return chunks or [text[:max_chars]]
 
 
+# ── Post-processing: pitch-preserving speed change ───────────────────────────
+
+def _apply_speed(audio: np.ndarray, sample_rate: int, speed: float) -> np.ndarray:
+    """Time-stretch audio using ffmpeg's atempo filter (pitch-preserving).
+
+    Operates entirely on temp files with the bundled ffmpeg binary — no PATH
+    lookup required.  Returns the original array unchanged on any error.
+
+    atempo operates in the range 0.5–2.0; values outside that range are
+    achieved by chaining multiple atempo stages.
+    """
+    if abs(speed - 1.0) < 0.02:
+        return audio
+
+    ffmpeg_exe = _get_ffmpeg_exe()
+    if ffmpeg_exe is None:
+        print("  ⚠ ffmpeg not available — speed adjustment skipped.")
+        return audio
+
+    import soundfile as sf
+
+    # Build chained atempo filter string so any speed in [0.25, 4.0] works
+    def _atempo_chain(s: float) -> str:
+        stages: list[str] = []
+        while s < 0.5 - 1e-6:
+            stages.append("atempo=0.5")
+            s /= 0.5
+        while s > 2.0 + 1e-6:
+            stages.append("atempo=2.0")
+            s /= 2.0
+        stages.append(f"atempo={s:.4f}")
+        return ",".join(stages)
+
+    tmp_in  = Path(tempfile.mktemp(suffix=".wav"))
+    tmp_out = Path(tempfile.mktemp(suffix=".wav"))
+    try:
+        sf.write(str(tmp_in), audio, sample_rate, format="WAV", subtype="PCM_16")
+        subprocess.run(
+            [ffmpeg_exe, "-y", "-i", str(tmp_in),
+             "-af", _atempo_chain(speed),
+             "-ar", str(sample_rate), "-ac", "1", str(tmp_out)],
+            capture_output=True, check=True,
+        )
+        result, _ = sf.read(str(tmp_out), dtype="float32")
+        return result
+    except Exception as exc:
+        print(f"  ⚠ Speed adjustment failed ({exc}) — returning at 1.0×.")
+        return audio
+    finally:
+        tmp_in.unlink(missing_ok=True)
+        tmp_out.unlink(missing_ok=True)
+
+
 # ── Core inference ────────────────────────────────────────────────────────────
 
 def _infer_chunk(
@@ -321,9 +374,14 @@ def generate_speech(
     # or f5-tts trying to shell out to 'ffmpeg' by name for non-WAV formats.
     wav_ref, wav_is_temp = _to_wav(ref_audio_path)
     try:
+        # Always generate at speed=1.0 inside F5-TTS.
+        # Passing non-1.0 values changes the internal mel-spectrogram target
+        # duration and frequently causes tensor-size mismatches (especially
+        # speed < 0.8).  We apply the user's speed afterwards via ffmpeg atempo
+        # which is pitch-preserving and works reliably for any value 0.5–2.0.
         for i, chunk in enumerate(chunks):
             audio_arr, sr = _infer_chunk(
-                tts, wav_ref, ref_text, chunk, speed, remove_silence
+                tts, wav_ref, ref_text, chunk, speed=1.0, remove_silence=remove_silence
             )
             sample_rate = sr
             all_audio.append(audio_arr)
@@ -334,6 +392,11 @@ def generate_speech(
             Path(wav_ref).unlink(missing_ok=True)
 
     combined: np.ndarray = np.concatenate(all_audio) if len(all_audio) > 1 else all_audio[0]
+
+    # Apply user-requested speed via pitch-preserving ffmpeg atempo
+    if abs(speed - 1.0) > 0.02:
+        print(f"  Applying {speed}× time-stretch via ffmpeg atempo…")
+        combined = _apply_speed(combined, sample_rate, speed)
 
     # Convert float32 → int16 PCM
     audio_int16 = (combined * 32767).clip(-32768, 32767).astype(np.int16)
