@@ -334,8 +334,13 @@ def _infer_chunk(
     a block-aligned value. Trying 7 candidate speeds at each depth almost
     always finds one that works without splitting.
     """
-    # Speeds to try at this depth — jitter around 1.0 in small steps
-    _SPEED_CANDIDATES = [1.0, 0.95, 1.05, 0.90, 1.10, 0.85, 1.15]
+    # Hard guard: skip text that contains no letters or digits at all.
+    # '。', '，', '…' etc. are not speakable and always crash F5-TTS.
+    if not any(c.isalpha() or c.isdigit() for c in gen_text):
+        return np.zeros(100, dtype=np.float32), 24000
+
+    # Speeds to try — jitter covers ±40 % to find a block-aligned mel length
+    _SPEED_CANDIDATES = [1.0, 0.85, 1.15, 0.70, 1.30, 0.55, 1.50]
 
     for try_speed in _SPEED_CANDIDATES:
         try:
