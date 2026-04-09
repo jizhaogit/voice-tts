@@ -10,7 +10,8 @@
       "Bash(timeout 5 node index.js)",
       "Bash(node --input-type=module)",
       "Bash(node -e ':*)",
-      "Bash(python -c ':*)"
+      "Bash(python -c ':*)",
+      "Bash(runtimepython.exe -c ':*)"
     ]
   }
 }

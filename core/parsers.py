@@ -23,12 +23,17 @@ def extract_text(file_path: str, original_name: str) -> str:
             try:
                 text = raw.decode(enc).lstrip("\ufeff").strip()
                 if text:
+                    print(f"  [parsers] TXT decoded as {enc} — "
+                          f"{len(text)} chars, preview: {text[:60]!r}")
                     return text
             except (UnicodeDecodeError, LookupError):
                 continue
 
         # Final fallback — replace undecodable bytes rather than crash
-        return raw.decode("utf-8", errors="replace").strip()
+        text = raw.decode("utf-8", errors="replace").strip()
+        print(f"  [parsers] TXT fallback utf-8/replace — "
+              f"{len(text)} chars, preview: {text[:60]!r}")
+        return text
 
     if ext == ".pdf":
         import pypdf

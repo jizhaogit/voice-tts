@@ -5,6 +5,7 @@ No fine-tuning required: inference is zero-shot.
 
 Model download (~1.2 GB) happens automatically on first call to infer().
 """
+_TTS_VERSION = "2026-04-09-a"  # bump this to confirm which copy is running
 import io
 import os
 import re
@@ -250,7 +251,15 @@ def chunk_text(text: str, max_chars: int | None = None) -> list[str]:
         else:
             merged.append(chunk)
 
-    return merged or [text[:max_chars]]
+    # Only fall back to raw text if it contains speakable content.
+    # Never return a chunk that is purely punctuation/whitespace — it would
+    # reach F5-TTS and either crash or produce silence.
+    if not merged:
+        raw_fallback = text[:max_chars].strip()
+        if _has_speakable(raw_fallback):
+            return [raw_fallback]
+        return []          # nothing speakable at all
+    return merged
 
 
 # ── Post-processing: pitch-preserving speed change ───────────────────────────
@@ -339,6 +348,15 @@ def _infer_chunk(
     if not any(c.isalpha() or c.isdigit() for c in gen_text):
         return np.zeros(100, dtype=np.float32), 24000
 
+    # Hard guard: skip text that is too short for F5-TTS to synthesise.
+    # The mel-duration formula always produces a tensor size mismatch for
+    # chunks shorter than ~4 speakable characters, regardless of speed.
+    # Trying 7 speeds just wastes time; skip immediately.
+    speakable_chars = sum(1 for c in gen_text if c.isalpha() or c.isdigit())
+    if speakable_chars < 4:
+        print(f"  ⚠ Skipping too-short chunk ({speakable_chars} speakable chars): {gen_text!r}")
+        return np.zeros(100, dtype=np.float32), 24000
+
     # Speeds to try — jitter covers ±40 % to find a block-aligned mel length
     _SPEED_CANDIDATES = [1.0, 0.85, 1.15, 0.70, 1.30, 0.55, 1.50]
 
@@ -393,7 +411,8 @@ def generate_speech(
     """
     tts = _get_tts()
 
-    # ── Debug: show what text arrived and what chunks were produced ───────────
+    # ── Debug: confirm version + show what text arrived ───────────────────────
+    print(f"  [tts.py {_TTS_VERSION}]")
     char_count = len(gen_text)
     preview    = gen_text[:80].replace('\n', '↵')
     print(f"  gen_text: {char_count} chars — {preview!r}")
@@ -403,12 +422,16 @@ def generate_speech(
     if chunks:
         print(f"  Chunks  : {total}  |  first={chunks[0][:60]!r}")
     else:
-        print("  ⚠ No chunks produced — document may be empty or corrupt.")
+        print("  ⚠ No speakable chunks — document contains no letters or digits.")
+        print(f"     First 120 chars of raw text: {gen_text[:120]!r}")
+
     if not chunks:
         raise ValueError(
-            "No speakable text found. The document may be empty, corrupt, "
-            "or encoded in a format that could not be read. "
-            "Please delete and re-upload the document."
+            "No speakable text found in this document. "
+            f"The extracted text starts with: {gen_text[:80]!r}. "
+            "If this looks wrong (garbled characters or only punctuation), "
+            "please DELETE the document in the Documents tab and re-upload it — "
+            "the app will re-extract the text with the latest encoding fixes."
         )
     all_audio: list[np.ndarray] = []
     sample_rate = 24000
