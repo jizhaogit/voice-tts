@@ -33,27 +33,42 @@ logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 # ── Wire up bundled ffmpeg so pydub (used internally by f5-tts) works ────────
 def _configure_ffmpeg() -> None:
     """
-    imageio-ffmpeg ships a self-contained ffmpeg binary.  Point pydub at it
-    so f5-tts can load MP3 / M4A / WebM reference audio without a system
-    ffmpeg install.  Also drop the binary's directory on PATH so any
-    subprocess spawned by pydub finds it automatically.
+    imageio-ffmpeg ships a self-contained ffmpeg binary.  We expose it as
+    'ffmpeg.exe' in the runtime folder so every subprocess (Whisper,
+    torchaudio, pydub) can find it by its conventional name on PATH —
+    without requiring a system-wide ffmpeg install.
+
+    Background: imageio-ffmpeg names its binary e.g. 'ffmpeg-win64-v7.0.exe',
+    NOT 'ffmpeg.exe'.  Simply adding its directory to PATH is not enough
+    because Whisper / torchaudio call subprocess(['ffmpeg', ...]) by name.
+    Copying it to runtime\\ffmpeg.exe (next to python.exe) solves this.
     """
     try:
         import imageio_ffmpeg  # bundled binary, installed via requirements.txt
-        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        ffmpeg_src = Path(imageio_ffmpeg.get_ffmpeg_exe())
 
-        # Tell pydub's AudioSegment to use this binary
+        # ── Place a canonically-named alias in runtime\ ───────────────────────
+        runtime_dir = _PROJECT_ROOT / "runtime"
+        ffmpeg_alias = runtime_dir / "ffmpeg.exe"
+
+        if runtime_dir.exists() and not ffmpeg_alias.exists():
+            import shutil
+            shutil.copy2(str(ffmpeg_src), str(ffmpeg_alias))
+
+        # Use the alias if it exists, otherwise fall back to the original path
+        ffmpeg_exe = ffmpeg_alias if ffmpeg_alias.exists() else ffmpeg_src
+
+        # ── Tell pydub's AudioSegment to use this binary ──────────────────────
         from pydub import AudioSegment
-        AudioSegment.converter = ffmpeg_exe
+        AudioSegment.converter = str(ffmpeg_exe)
+        # Modern ffmpeg handles ffprobe-style queries; point both at same binary
+        AudioSegment.ffprobe = str(ffmpeg_exe)
 
-        # ffprobe: imageio-ffmpeg only ships ffmpeg, but modern ffmpeg can
-        # substitute for most ffprobe queries via "ffmpeg -i …".
-        # Point pydub's ffprobe at the same binary — covers 95 % of cases.
-        AudioSegment.ffprobe = ffmpeg_exe
-
-        # Also add the directory to PATH for subprocesses
-        ffmpeg_dir = str(Path(ffmpeg_exe).parent)
-        os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+        # ── Add runtime\ to PATH so all subprocesses find 'ffmpeg' ───────────
+        runtime_str = str(runtime_dir)
+        path_parts = os.environ.get("PATH", "").split(os.pathsep)
+        if runtime_str not in path_parts:
+            os.environ["PATH"] = runtime_str + os.pathsep + os.environ.get("PATH", "")
 
         print(f"  ffmpeg : {ffmpeg_exe}")
     except Exception as exc:

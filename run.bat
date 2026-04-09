@@ -99,7 +99,7 @@ echo.
 :: ════════════════════════════════════════════════════════
 
 :check_packages
-runtime\python.exe -c "import f5_tts" >nul 2>&1
+runtime\python.exe -c "import f5_tts, imageio_ffmpeg" >nul 2>&1
 if %ERRORLEVEL% neq 0 goto :install_packages
 
 :: ── CUDA compatibility check (catches version mismatch on existing installs) ─
@@ -180,7 +180,7 @@ runtime\python.exe -m pip install -r requirements.txt ^
     --quiet
 
 :: ── Verify (do NOT rely on pip exit code) ─────────────────
-runtime\python.exe -c "import f5_tts" >nul 2>&1
+runtime\python.exe -c "import f5_tts, imageio_ffmpeg" >nul 2>&1
 if %ERRORLEVEL% neq 0 (
     echo.
     echo  [ERROR] Package installation failed.
