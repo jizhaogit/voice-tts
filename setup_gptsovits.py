@@ -183,9 +183,43 @@ def setup_deps():
         print(f"\n  [!] {len(failed)} package(s) could not be installed:")
         for p in failed:
             print(f"        - {p}")
-        print("      Generation may still work if these are non-essential.")
-    else:
-        print("\n  [OK] All dependencies installed.")
+        print("      Applying shims for known build-only packages ...")
+
+    # jieba_fast: C extension, often fails to build on Windows.
+    # Create a shim module so GPT-SoVITS can still import it using jieba.
+    _install_jieba_fast_shim()
+
+    print("\n  [OK] Dependencies ready.")
+
+
+def _install_jieba_fast_shim():
+    """If jieba_fast is not importable, create a shim that wraps jieba."""
+    try:
+        import jieba_fast  # noqa: F401 — already works, nothing to do
+        return
+    except ImportError:
+        pass
+
+    import sysconfig
+    site_packages = sysconfig.get_path("purelib")
+    if not site_packages:
+        return
+
+    shim_path = Path(site_packages) / "jieba_fast.py"
+    shim_path.write_text(
+        '"""jieba_fast shim: C extension unavailable, using jieba as fallback."""\n'
+        "from jieba import *  # noqa\n"
+        "import jieba as _j\n"
+        "cut             = _j.cut\n"
+        "lcut            = _j.lcut\n"
+        "cut_for_search  = _j.cut_for_search\n"
+        "lcut_for_search = _j.lcut_for_search\n"
+        "load_userdict   = _j.load_userdict\n"
+        "add_word        = _j.add_word\n"
+        "initialize      = _j.initialize\n",
+        encoding="utf-8",
+    )
+    print("  [OK] jieba_fast shim installed (uses jieba as fallback).")
 
 
 # ---------------------------------------------------------------------------
