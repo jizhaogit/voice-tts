@@ -1,6 +1,8 @@
 """Voice TTS Studio — FastAPI application entry point."""
 import logging
 import os
+import socket
+import subprocess
 import sys
 import threading
 import time
@@ -15,72 +17,38 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 # ── Suppress known harmless noise before any heavy imports ───────────────────
-
-# 1) HuggingFace symlink warning (Windows without Developer Mode)
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
-
-# 2) pydub ffmpeg/ffprobe "Couldn't find" RuntimeWarnings
-warnings.filterwarnings("ignore", message=".*ffmpeg.*", category=RuntimeWarning)
+warnings.filterwarnings("ignore", message=".*ffmpeg.*",  category=RuntimeWarning)
 warnings.filterwarnings("ignore", message=".*ffprobe.*", category=RuntimeWarning)
-warnings.filterwarnings("ignore", message=".*avconv.*", category=RuntimeWarning)
+warnings.filterwarnings("ignore", message=".*avconv.*",  category=RuntimeWarning)
 warnings.filterwarnings("ignore", message=".*avprobe.*", category=RuntimeWarning)
-
-# 3) Windows asyncio ConnectionResetError (WinError 10054) — browser closes
-#    keep-alive connections; completely harmless but floods the console.
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 
 
-# ── Wire up bundled ffmpeg so pydub (used internally by f5-tts) works ────────
+# ── ffmpeg setup (needed to load non-WAV reference audio) ────────────────────
 def _configure_ffmpeg() -> None:
-    """
-    imageio-ffmpeg ships a self-contained ffmpeg binary.  We expose it as
-    'ffmpeg.exe' in the runtime folder so every subprocess (Whisper,
-    torchaudio, pydub) can find it by its conventional name on PATH —
-    without requiring a system-wide ffmpeg install.
-
-    Background: imageio-ffmpeg names its binary e.g. 'ffmpeg-win64-v7.0.exe',
-    NOT 'ffmpeg.exe'.  Simply adding its directory to PATH is not enough
-    because Whisper / torchaudio call subprocess(['ffmpeg', ...]) by name.
-    Copying it to runtime\\ffmpeg.exe (next to python.exe) solves this.
-    """
     try:
-        import imageio_ffmpeg  # bundled binary, installed via requirements.txt
+        import imageio_ffmpeg
         ffmpeg_src = Path(imageio_ffmpeg.get_ffmpeg_exe())
-
-        # ── Place a canonically-named alias in runtime\ ───────────────────────
-        runtime_dir = _PROJECT_ROOT / "runtime"
-        ffmpeg_alias = runtime_dir / "ffmpeg.exe"
-
+        runtime_dir   = _PROJECT_ROOT / "runtime"
+        ffmpeg_alias  = runtime_dir / "ffmpeg.exe"
         if runtime_dir.exists() and not ffmpeg_alias.exists():
             import shutil
             shutil.copy2(str(ffmpeg_src), str(ffmpeg_alias))
-
-        # Use the alias if it exists, otherwise fall back to the original path
         ffmpeg_exe = ffmpeg_alias if ffmpeg_alias.exists() else ffmpeg_src
-
-        # ── Tell pydub's AudioSegment to use this binary ──────────────────────
         from pydub import AudioSegment
         AudioSegment.converter = str(ffmpeg_exe)
-        # Modern ffmpeg handles ffprobe-style queries; point both at same binary
-        AudioSegment.ffprobe = str(ffmpeg_exe)
-
-        # ── Add runtime\ to PATH so all subprocesses find 'ffmpeg' ───────────
+        AudioSegment.ffprobe   = str(ffmpeg_exe)
         runtime_str = str(runtime_dir)
-        path_parts = os.environ.get("PATH", "").split(os.pathsep)
-        if runtime_str not in path_parts:
+        if runtime_str not in os.environ.get("PATH", "").split(os.pathsep):
             os.environ["PATH"] = runtime_str + os.pathsep + os.environ.get("PATH", "")
-
         print(f"  ffmpeg : {ffmpeg_exe}")
     except Exception as exc:
-        # Non-fatal — WAV reference audio still works; only non-WAV formats
-        # (MP3, M4A, WebM) will fail when f5-tts tries to load them.
-        print(f"  ⚠ ffmpeg not configured ({exc}). Upload WAV reference audio "
-              f"or re-run run.bat to install imageio-ffmpeg.")
-
+        print(f"  ⚠ ffmpeg not configured ({exc}). WAV reference audio still works.")
 
 _configure_ffmpeg()
 
-# ── Late imports (after env vars and ffmpeg are set) ─────────────────────────
+# ── Late imports ──────────────────────────────────────────────────────────────
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -89,43 +57,119 @@ from fastapi.staticfiles import StaticFiles
 
 load_dotenv()
 
-# Ensure data directories exist
 for _folder in ["data/voices", "data/documents", "data/generated"]:
     Path(_folder).mkdir(parents=True, exist_ok=True)
+
+
+# ── GPT-SoVITS API server management ─────────────────────────────────────────
+
+_GPTSOVITS_PORT = int(os.getenv("GPTSOVITS_PORT", 9880))
+_gptsovits_proc: subprocess.Popen | None = None
+
+
+def _gptsovits_is_running() -> bool:
+    """Return True if something is already listening on the GPT-SoVITS port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        return s.connect_ex(("127.0.0.1", _GPTSOVITS_PORT)) == 0
+
+
+def _start_gptsovits() -> None:
+    global _gptsovits_proc
+
+    gts_dir = _PROJECT_ROOT / "gpt-sovits"
+    if not (gts_dir / "api_v2.py").exists():
+        print("  ⚠ GPT-SoVITS not found at gpt-sovits/api_v2.py.")
+        print("    Run run.bat to install it automatically.")
+        return
+
+    if _gptsovits_is_running():
+        print(f"  [OK] GPT-SoVITS already running on port {_GPTSOVITS_PORT}.")
+        return
+
+    # Prefer the portable runtime Python; fall back to the current interpreter
+    runtime_py = _PROJECT_ROOT / "runtime" / "python.exe"
+    py_exe = str(runtime_py) if runtime_py.exists() else sys.executable
+
+    log_path = _PROJECT_ROOT / "data" / "gptsovits.log"
+    log_file = log_path.open("a", encoding="utf-8")
+
+    print(f"  [..] Starting GPT-SoVITS API server on port {_GPTSOVITS_PORT} ...")
+    _gptsovits_proc = subprocess.Popen(
+        [py_exe, "api_v2.py",
+         "-a", "127.0.0.1",
+         "-p", str(_GPTSOVITS_PORT)],
+        cwd=str(gts_dir),
+        stdout=log_file,
+        stderr=log_file,
+    )
+
+    # Wait up to 120 s for the server to accept connections
+    for elapsed in range(120):
+        time.sleep(1)
+        if _gptsovits_is_running():
+            print(f"  [OK] GPT-SoVITS ready (started in {elapsed + 1}s).")
+            print(f"       Log: {log_path}")
+            return
+        if _gptsovits_proc.poll() is not None:
+            print(f"  [ERROR] GPT-SoVITS process exited early (code {_gptsovits_proc.returncode}).")
+            print(f"          Check {log_path} for details.")
+            _gptsovits_proc = None
+            return
+
+    print(f"  [!] GPT-SoVITS did not become ready within 120 s.")
+    print(f"      Check {log_path} for details.")
+
+
+def _stop_gptsovits() -> None:
+    global _gptsovits_proc
+    if _gptsovits_proc and _gptsovits_proc.poll() is None:
+        print("  [..] Stopping GPT-SoVITS API server ...")
+        _gptsovits_proc.terminate()
+        try:
+            _gptsovits_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            _gptsovits_proc.kill()
+        _gptsovits_proc = None
+        print("  [OK] GPT-SoVITS stopped.")
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Reset jobs that were interrupted by a previous server crash/restart."""
-    from core.db import read_db, write_db
+    # Start GPT-SoVITS in a thread so it doesn't block the event loop
+    threading.Thread(target=_start_gptsovits, daemon=False).start()
 
+    # Reset any interrupted jobs from a previous crash
+    from core.db import read_db, write_db
     db = read_db()
     changed = False
     for job in db["jobs"]:
         if job["status"] in ("pending", "processing"):
             job["status"] = "failed"
-            job["error"] = "Server restarted while job was running"
+            job["error"]  = "Server restarted while job was running"
             changed = True
     if changed:
         write_db(db)
 
     yield
 
+    _stop_gptsovits()
+
 
 # ── App factory ───────────────────────────────────────────────────────────────
 def create_app() -> FastAPI:
-    from api.voices import router as voices_router
+    from api.voices    import router as voices_router
     from api.documents import router as documents_router
-    from api.generate import router as generate_router
+    from api.generate  import router as generate_router
 
     app = FastAPI(
         title="Voice TTS Studio",
-        description="Zero-shot voice cloning and document TTS using F5-TTS",
+        description="Zero-shot voice cloning with GPT-SoVITS",
         lifespan=lifespan,
     )
 
-    app.include_router(voices_router,   prefix="/api/voices",    tags=["voices"])
+    app.include_router(voices_router,    prefix="/api/voices",    tags=["voices"])
     app.include_router(documents_router, prefix="/api/documents", tags=["documents"])
     app.include_router(generate_router,  prefix="/api/generate",  tags=["generate"])
 
@@ -140,7 +184,7 @@ def create_app() -> FastAPI:
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 def open_browser(port: int) -> None:
-    time.sleep(1.8)
+    time.sleep(2.5)          # give GPT-SoVITS a head-start
     webbrowser.open(f"http://localhost:{port}")
 
 

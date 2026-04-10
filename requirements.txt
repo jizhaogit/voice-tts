@@ -14,12 +14,11 @@ lxml>=5.0.0
 soundfile>=0.12.1
 lameenc>=1.7.0
 
-# Bundled ffmpeg binary — used by pydub (which f5-tts depends on) to load
-# MP3 / M4A / WebM reference audio without a system ffmpeg install
+# Bundled ffmpeg binary — converts MP3/M4A/WebM reference audio to WAV
 imageio-ffmpeg>=0.5.1
 
-# Voice transcription (for auto-fill reference text)
+# Voice transcription (auto-fill reference text)
 openai-whisper>=20231117
 
-# F5-TTS (voice cloning) — torch installed separately in run.bat for GPU/CPU detection
-f5-tts>=1.1.0
+# HTTP client — used to call the GPT-SoVITS local API server
+requests>=2.31.0
