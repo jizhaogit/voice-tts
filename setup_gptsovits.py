@@ -251,6 +251,10 @@ def _install_jieba_fast_shim():
 def setup_models():
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     gpt_dir = MODELS_DIR / "gsv-v2final-pretrained"
+
+    # fast-langdetect expects its cache directory to already exist before
+    # it attempts to download lid.176.bin into it.
+    (MODELS_DIR / "fast_langdetect").mkdir(exist_ok=True)
     gpt_dir.mkdir(exist_ok=True)
 
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
