@@ -197,45 +197,13 @@ echo.
 :: ════════════════════════════════════════════════════════
 
 :check_gptsovits
-:: Install ALL known GPT-SoVITS dependencies individually.
-:: One package per pip call so a single failure never blocks the rest.
-:: pyopenjtalk is excluded — needs C++ compiler, Japanese-only.
-:: torch/torchaudio/torchvision excluded — already installed above.
-echo  [..] Installing GPT-SoVITS dependencies ^(one-time^)...
-for %%P in (
-    ffmpeg-python
-    pytorch-lightning
-    peft
-    accelerate
-    transformers
-    librosa
-    soundfile
-    jieba
-    pypinyin
-    cn2an
-    LangSegment
-    onnxruntime
-    sentencepiece
-    einops
-    omegaconf
-    tqdm
-    Pillow
-    psutil
-    scipy
-    encodec
-    vector-quantize-pytorch
-    rotary-embedding-torch
-    huggingface_hub
-    fast-langdetect
-    split-lang
-) do (
-    runtime\python.exe -m pip install %%P ^
-        --no-warn-script-location --quiet --disable-pip-version-check >nul 2>&1
-    if !ERRORLEVEL! neq 0 (
-        echo  [!] Warning: %%P failed to install -- skipping.
-    )
+:: Install / verify all GPT-SoVITS dependencies via the Python setup script.
+:: It installs packages one at a time so a single failure never blocks the rest.
+echo  [..] Checking GPT-SoVITS dependencies...
+runtime\python.exe setup_gptsovits.py --deps-only
+if %ERRORLEVEL% neq 0 (
+    echo  [!] Dependency check reported issues -- see above. Continuing anyway.
 )
-echo  [OK] GPT-SoVITS dependencies installed.
 
 if exist "gpt-sovits\api_v2.py" (
     if exist "gpt-sovits\GPT_SoVITS\pretrained_models\gsv-v2final-pretrained\s2G2333k.pth" (

@@ -2,8 +2,13 @@
 GPT-SoVITS one-time setup: downloads code + pretrained models.
 Called automatically by run.bat on first launch.
 Safe to re-run: each step is skipped if already complete.
+
+Usage:
+  python setup_gptsovits.py            # full setup (code + deps + models)
+  python setup_gptsovits.py --deps-only  # only install / repair dependencies
 """
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -22,12 +27,14 @@ GITHUB_ZIP = "https://github.com/RVC-Boss/GPT-SoVITS/archive/refs/heads/main.zip
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _pip(*args):
-    subprocess.run(
-        [sys.executable, "-m", "pip", *args,
+def _pip_install(pkg: str) -> bool:
+    """Install a single package. Returns True on success."""
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", pkg,
          "--no-warn-script-location", "--quiet", "--disable-pip-version-check"],
-        check=False,
+        capture_output=True,
     )
+    return result.returncode == 0
 
 
 def _hf_download():
@@ -37,7 +44,7 @@ def _hf_download():
         return hf_hub_download, snapshot_download
     except ImportError:
         print("  [..] Installing huggingface_hub...")
-        _pip("install", "huggingface_hub")
+        _pip_install("huggingface_hub")
         from huggingface_hub import hf_hub_download, snapshot_download
         return hf_hub_download, snapshot_download
 
@@ -65,7 +72,6 @@ def setup_code():
         zf.extractall(str(ROOT))
     zip_path.unlink(missing_ok=True)
 
-    # GitHub zips extract as  GPT-SoVITS-main/
     for candidate in ROOT.iterdir():
         if candidate.is_dir() and candidate.name.startswith("GPT-SoVITS"):
             shutil.move(str(candidate), str(GTS_DIR))
@@ -79,40 +85,107 @@ def setup_code():
 
 
 # ---------------------------------------------------------------------------
-# Step 2 — Install GPT-SoVITS Python dependencies
+# Step 2 — Install ALL GPT-SoVITS Python dependencies
 # ---------------------------------------------------------------------------
 
 def setup_deps():
-    req = GTS_DIR / "requirements.txt"
-    if not req.exists():
-        print("  [!] requirements.txt not found in gpt-sovits/ — skipping.")
-        return
+    """Install every package GPT-SoVITS needs, one at a time.
 
-    # GPT-SoVITS pins old torch/torchaudio/torchvision versions that conflict
-    # with the GPU build installed by run.bat.  Strip those lines before installing.
-    _SKIP_PREFIXES = ("torch", "torchaudio", "torchvision", "pyopenjtalk")
+    Packages that need a C++ compiler (pyopenjtalk, g2pk2, ko_pron) and
+    Korean/Japanese-only packages are skipped on Windows.
+    torch/torchaudio/torchvision are skipped — already installed by run.bat
+    with the correct GPU build.
+    opencc is replaced with opencc-python-reimplemented (no compiler needed).
+    """
 
-    lines = req.read_text(encoding="utf-8", errors="ignore").splitlines()
-    filtered = [
-        ln for ln in lines
-        if ln.strip() and not ln.strip().startswith("#")
-        and not any(ln.strip().lower().startswith(p) for p in _SKIP_PREFIXES)
+    # Detect platform for conditional packages
+    is_windows = sys.platform == "win32"
+    is_x86_64  = platform.machine().lower() in ("amd64", "x86_64")
+
+    # Full list derived from GPT-SoVITS requirements.txt + known missing packages.
+    # Format: package_spec  (pip install argument, may include version constraints)
+    PACKAGES = [
+        # Core ML — version-pinned to match what GPT-SoVITS expects
+        "numpy<2.0",
+        "scipy",
+        "pytorch-lightning>=2.4",
+        "transformers>=4.43,<=4.50",
+        "peft<0.18.0",
+        "accelerate",
+        "einops",
+        "torchmetrics<=1.5",
+        "x-transformers",
+        "rotary-embedding-torch",
+
+        # Audio processing
+        "librosa==0.10.2",
+        "numba",
+        "ffmpeg-python",
+        "soundfile",
+        "av>=11",
+
+        # Chinese NLP
+        "jieba",
+        "jieba_fast",
+        "pypinyin",
+        "cn2an",
+        "split-lang",
+        "fast-langdetect>=0.3.1",
+        "LangSegment",
+        "opencc-python-reimplemented",  # replaces opencc (no compiler needed)
+        "ToJyutping",
+
+        # English NLP
+        "g2p-en",
+        "wordsegment",
+
+        # Model / inference
+        "sentencepiece",
+        "huggingface_hub",
+        "modelscope",
+        "funasr==1.0.27",
+        "ctranslate2>=4.0,<5",
+
+        # Utilities
+        "tensorboard",
+        "tqdm",
+        "chardet",
+        "PyYAML",
+        "psutil",
+        "Pillow",
+        "pydantic<=2.10.6",
+        "gradio<5",
     ]
 
-    filtered_req = GTS_DIR / "_requirements_filtered.txt"
-    filtered_req.write_text("\n".join(filtered), encoding="utf-8")
-
-    print(f"  [..] Installing {len(filtered)} GPT-SoVITS dependencies ...")
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-r", str(filtered_req),
-         "--no-warn-script-location", "--quiet", "--disable-pip-version-check"],
-    )
-    filtered_req.unlink(missing_ok=True)
-
-    if result.returncode != 0:
-        print("  [!] Some deps failed — continuing anyway.")
+    # onnxruntime: GPU variant on x86_64 Windows, CPU variant elsewhere
+    if is_x86_64:
+        PACKAGES.append("onnxruntime-gpu")
     else:
-        print("  [OK] Dependencies installed.")
+        PACKAGES.append("onnxruntime")
+
+    # Korean packages only on non-Windows (they require system libs)
+    if not is_windows:
+        PACKAGES += ["g2pk2", "ko_pron", "python-mecab-ko"]
+
+    total   = len(PACKAGES)
+    failed  = []
+
+    print(f"  [..] Installing {total} GPT-SoVITS dependencies (one-time) ...")
+    for i, pkg in enumerate(PACKAGES, 1):
+        label = pkg.split(">=")[0].split("<=")[0].split("<")[0].split(">")[0].split("==")[0]
+        print(f"       [{i:>2}/{total}] {label} ...", end=" ", flush=True)
+        ok = _pip_install(pkg)
+        print("[OK]" if ok else "[SKIP]")
+        if not ok:
+            failed.append(pkg)
+
+    if failed:
+        print(f"\n  [!] {len(failed)} package(s) could not be installed:")
+        for p in failed:
+            print(f"        - {p}")
+        print("      Generation may still work if these are non-essential.")
+    else:
+        print("\n  [OK] All dependencies installed.")
 
 
 # ---------------------------------------------------------------------------
@@ -128,10 +201,8 @@ def setup_models():
     hf_hub_download, snapshot_download = _hf_download()
 
     models = [
-        # (description, size, check_path, download_fn)
         (
-            "SoVITS acoustic model",
-            "~300 MB",
+            "SoVITS acoustic model", "~300 MB",
             gpt_dir / "s2G2333k.pth",
             lambda: hf_hub_download(
                 repo_id="lj1995/GPT-SoVITS",
@@ -140,8 +211,7 @@ def setup_models():
             ),
         ),
         (
-            "GPT language model",
-            "~1.5 GB",
+            "GPT language model", "~1.5 GB",
             gpt_dir / "s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt",
             lambda: hf_hub_download(
                 repo_id="lj1995/GPT-SoVITS",
@@ -150,8 +220,7 @@ def setup_models():
             ),
         ),
         (
-            "Chinese BERT",
-            "~1.3 GB",
+            "Chinese BERT", "~1.3 GB",
             MODELS_DIR / "chinese-roberta-wwm-ext-large" / "config.json",
             lambda: snapshot_download(
                 repo_id="hfl/chinese-roberta-wwm-ext-large",
@@ -159,8 +228,7 @@ def setup_models():
             ),
         ),
         (
-            "Chinese HuBERT",
-            "~380 MB",
+            "Chinese HuBERT", "~380 MB",
             MODELS_DIR / "chinese-hubert-base" / "config.json",
             lambda: snapshot_download(
                 repo_id="TencentGameMate/chinese-hubert-base",
@@ -192,27 +260,31 @@ def setup_models():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    print()
-    print("  ════════════════════════════════════════════")
-    print("    GPT-SoVITS  —  First-time Setup")
-    print("  ════════════════════════════════════════════")
-    print()
+    deps_only = "--deps-only" in sys.argv
 
-    print("  ── Step 1/3 : Source code ──────────────────")
-    setup_code()
-    print()
-
-    print("  ── Step 2/3 : Python dependencies ──────────")
-    setup_deps()
-    print()
-
-    print("  ── Step 3/3 : Pretrained models (~3.5 GB) ──")
-    print("  NOTE: Large download — please wait.")
-    print()
-    setup_models()
-
-    print()
-    print("  ════════════════════════════════════════════")
-    print("    GPT-SoVITS setup complete!")
-    print("  ════════════════════════════════════════════")
-    print()
+    if deps_only:
+        print()
+        print("  ── GPT-SoVITS dependency check ─────────────")
+        setup_deps()
+        print()
+    else:
+        print()
+        print("  ════════════════════════════════════════════")
+        print("    GPT-SoVITS  —  First-time Setup")
+        print("  ════════════════════════════════════════════")
+        print()
+        print("  ── Step 1/3 : Source code ──────────────────")
+        setup_code()
+        print()
+        print("  ── Step 2/3 : Python dependencies ──────────")
+        setup_deps()
+        print()
+        print("  ── Step 3/3 : Pretrained models (~3.5 GB) ──")
+        print("  NOTE: Large download — please wait.")
+        print()
+        setup_models()
+        print()
+        print("  ════════════════════════════════════════════")
+        print("    GPT-SoVITS setup complete!")
+        print("  ════════════════════════════════════════════")
+        print()
