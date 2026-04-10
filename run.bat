@@ -197,19 +197,23 @@ echo.
 :: ════════════════════════════════════════════════════════
 
 :check_gptsovits
-:: Ensure GPT-SoVITS core dependencies are present
-:: (these are sometimes missed by its requirements.txt install)
-runtime\python.exe -c "import ffmpeg" >nul 2>&1
+:: Ensure all GPT-SoVITS dependencies are present.
+:: These are checked as a group — install only if any are missing.
+runtime\python.exe -c "import ffmpeg, pytorch_lightning, librosa, jieba, pypinyin, cn2an, LangSegment, onnxruntime, pyopenjtalk" >nul 2>&1
 if %ERRORLEVEL% neq 0 (
-    echo  [..] Installing ffmpeg-python ^(required by GPT-SoVITS^)...
-    runtime\python.exe -m pip install ffmpeg-python --no-warn-script-location --quiet
-    echo  [OK] ffmpeg-python installed.
-)
-runtime\python.exe -c "import pytorch_lightning" >nul 2>&1
-if %ERRORLEVEL% neq 0 (
-    echo  [..] Installing pytorch-lightning ^(required by GPT-SoVITS^)...
-    runtime\python.exe -m pip install pytorch-lightning --no-warn-script-location --quiet
-    echo  [OK] pytorch-lightning installed.
+    echo  [..] Installing GPT-SoVITS dependencies...
+    runtime\python.exe -m pip install ^
+        ffmpeg-python ^
+        pytorch-lightning ^
+        librosa ^
+        jieba ^
+        pypinyin ^
+        cn2an ^
+        LangSegment ^
+        onnxruntime ^
+        pyopenjtalk ^
+        --no-warn-script-location --quiet
+    echo  [OK] GPT-SoVITS dependencies installed.
 )
 
 if exist "gpt-sovits\api_v2.py" (
