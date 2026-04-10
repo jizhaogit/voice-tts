@@ -8,7 +8,7 @@ itself, calls GPT-SoVITS once per sentence with cut0 (no internal
 splitting), then stitches the audio together with natural pauses.
 This gives full control over pause length and avoids mid-sentence stops.
 """
-_TTS_VERSION = "2026-04-10-b"
+_TTS_VERSION = "2026-04-10-c"
 
 import io
 import os
@@ -187,6 +187,12 @@ _PAUSE_SENTENCE  = 0.40   # after 。！？.!?
 _PAUSE_CLAUSE    = 0.15   # after ，,;；
 _PAUSE_PARAGRAPH = 0.70   # after a blank line / paragraph break
 
+# Minimum characters per GPT-SoVITS call.
+# Short segments produce so little speech that the output can be ≤ reference
+# duration, making reference-stripping impossible.  Merging short segments
+# together ensures each call generates enough audio to strip cleanly.
+_MIN_SEGMENT_CHARS = 20
+
 
 def _split_segments(text: str) -> list[tuple[str, float]]:
     """Split *text* into (segment, pause_after_seconds) pairs.
@@ -244,6 +250,62 @@ def _split_segments(text: str) -> list[tuple[str, float]]:
                 results.append((sent, base_pause))
 
     return results
+
+
+def _merge_short_segments(
+    segments: list[tuple[str, float]],
+    min_chars: int = _MIN_SEGMENT_CHARS,
+    max_chars: int = 80,
+) -> list[tuple[str, float]]:
+    """Merge consecutive short segments so each GPT-SoVITS call is long enough.
+
+    Short segments (< min_chars) are accumulated into a buffer and flushed only
+    when the buffer reaches min_chars or a paragraph boundary is hit.
+    The pause of the *last* merged piece is kept for the combined segment.
+    Merging never crosses paragraph breaks (_PAUSE_PARAGRAPH) and never exceeds
+    max_chars so GPT-SoVITS doesn't choke on very long inputs.
+    """
+    if not segments:
+        return segments
+
+    result: list[tuple[str, float]] = []
+    acc_text  = ""
+    acc_pause = 0.0
+
+    for text, pause in segments:
+        if not acc_text:
+            acc_text  = text
+            acc_pause = pause
+            continue
+
+        # Flush buffer before a paragraph break — never merge across paragraphs
+        if acc_pause >= _PAUSE_PARAGRAPH:
+            result.append((acc_text, acc_pause))
+            acc_text  = text
+            acc_pause = pause
+            continue
+
+        # Flush buffer if merging would exceed the per-call character limit
+        if len(acc_text) + len(text) > max_chars:
+            result.append((acc_text, acc_pause))
+            acc_text  = text
+            acc_pause = pause
+            continue
+
+        # Merge into buffer; keep the new (later) pause
+        acc_text  = acc_text + text
+        acc_pause = pause
+
+        # Flush once buffer is long enough
+        if len(acc_text) >= min_chars:
+            result.append((acc_text, acc_pause))
+            acc_text  = ""
+            acc_pause = 0.0
+
+    if acc_text:
+        result.append((acc_text, acc_pause))
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -328,9 +390,12 @@ def _call_gptsovits(
         audio_arr = audio_arr[ref_samp:]
         print(f"  [dbg] stripped {ref_sec:.2f}s ref prefix → {len(audio_arr)/sr:.2f}s remaining")
     else:
-        # Output ≤ reference length: generation likely failed or produced silence.
-        # Keep as-is rather than returning empty audio.
-        print(f"  [dbg] WARNING: output ({total_sec:.2f}s) ≤ ref ({ref_sec:.2f}s) — keeping as-is")
+        # Output ≤ reference: the generated portion is essentially zero.
+        # Return a short silence — never play back the reference audio.
+        silence_sec = min(1.0, max(0.3, len(gen_text) * 0.15))
+        print(f"  [dbg] WARNING: output ({total_sec:.2f}s) ≤ ref ({ref_sec:.2f}s) "
+              f"— substituting {silence_sec:.2f}s silence")
+        audio_arr = np.zeros(int(sr * silence_sec), dtype=np.float32)
 
     return audio_arr, sr
 
@@ -379,6 +444,7 @@ def _generate_speech_inner(
         prompt_lang = _detect_lang(ref_text)
 
         segments = _split_segments(gen_text)
+        segments = _merge_short_segments(segments)
         total    = len(segments)
         print(f"  text_lang={text_lang}  prompt_lang={prompt_lang}  "
               f"speed={speed}  segments={total}")
