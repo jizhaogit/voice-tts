@@ -175,7 +175,16 @@ def delete_job(job_id: str):
         raise HTTPException(404, "Job not found")
 
     if job.get("output_file"):
-        (GENERATED_DIR / job["output_file"]).unlink(missing_ok=True)
+        file_path = GENERATED_DIR / job["output_file"]
+        def _delete_later(p: Path, retries: int = 5, delay: float = 2.0):
+            import time
+            for _ in range(retries):
+                try:
+                    p.unlink(missing_ok=True)
+                    return
+                except PermissionError:
+                    time.sleep(delay)
+        threading.Thread(target=_delete_later, args=(file_path,), daemon=True).start()
 
     db["jobs"] = [j for j in db["jobs"] if j["id"] != job_id]
     write_db(db)
