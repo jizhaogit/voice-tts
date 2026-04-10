@@ -5,7 +5,7 @@ No fine-tuning required: inference is zero-shot.
 
 Model download (~1.2 GB) happens automatically on first call to infer().
 """
-_TTS_VERSION = "2026-04-09-c"  # bump this to confirm which copy is running
+_TTS_VERSION = "2026-04-09-d"  # bump this to confirm which copy is running
 import io
 import os
 import re
@@ -402,25 +402,30 @@ def _infer_chunk(
     always finds one that works without splitting.
     """
     # Hard guard: skip text that contains no letters or digits at all.
-    # '。', '，', '…' etc. are not speakable and always crash F5-TTS.
     if not any(c.isalpha() or c.isdigit() for c in gen_text):
         return np.zeros(100, dtype=np.float32), 24000
 
-    # Hard guard: skip text that is too short for F5-TTS to synthesise.
-    # The mel-duration formula always produces a tensor size mismatch for
-    # chunks shorter than ~4 speakable characters, regardless of speed.
-    # Trying 7 speeds just wastes time; skip immediately.
+    # Hard guard: skip text too short for F5-TTS regardless of speed.
     speakable_chars = sum(1 for c in gen_text if c.isalpha() or c.isdigit())
     if speakable_chars < 4:
         print(f"  ⚠ Skipping too-short chunk ({speakable_chars} speakable chars): {gen_text!r}")
         return np.zeros(100, dtype=np.float32), 24000
 
-    # Speeds to try — jitter covers ±40 % to find a block-aligned mel length
-    _SPEED_CANDIDATES = [1.0, 0.85, 1.15, 0.70, 1.30, 0.55, 1.50]
+    # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _try_speeds(use_ref_text: str) -> tuple[np.ndarray, int] | None:
-        """Return (audio, sr) if any speed candidate succeeds, else None."""
-        for try_speed in _SPEED_CANDIDATES:
+    # Sparse grid: 7 candidates spread across ±40 % range
+    _SPARSE = [1.0, 0.85, 1.15, 0.70, 1.30, 0.55, 1.50]
+    # Dense grid: 21 candidates in 0.03 steps around 1.0
+    # Stepping by 0.03 changes gen_mel by ~1 frame per step for typical audio,
+    # covering all residues mod 8 (the U-Net block size) within a few attempts.
+    _DENSE  = [
+        1.00, 0.97, 1.03, 0.94, 1.06, 0.91, 1.09, 0.88, 1.12,
+        0.85, 1.15, 0.82, 1.18, 0.79, 1.21, 0.76, 1.24, 0.73, 1.27,
+        0.70, 1.30,
+    ]
+
+    def _try_speeds(use_ref_text: str, candidates: list) -> tuple[np.ndarray, int] | None:
+        for try_speed in candidates:
             try:
                 audio_arr, sr, _ = tts.infer(
                     ref_file=ref_file,
@@ -432,60 +437,39 @@ def _infer_chunk(
                 return audio_arr.flatten(), sr
             except RuntimeError as exc:
                 if "Sizes of tensors must match" not in str(exc):
-                    raise   # unrelated error — propagate immediately
+                    raise
         return None
 
-    # ── Pass 1: try with original ref_text ───────────────────────────────────
-    result = _try_speeds(ref_text)
+    # ── Pass 1: sparse speeds, original ref_text ─────────────────────────────
+    result = _try_speeds(ref_text, _SPARSE)
     if result:
         return result
 
-    # ── Pass 2: trim ref_text to fix ref/gen byte-length imbalance ───────────
-    # When ref_text is much longer than gen_text, the F5-TTS mel-duration
-    # formula produces a tiny gen contribution.  The U-Net block alignment
-    # then has no valid speed solution.  Trimming ref_text to ≈2.5× gen_text
-    # restores a sane ratio and usually makes speed=1.0 succeed immediately.
-    trimmed_ref = _trim_ref_text(ref_text, gen_text, factor=2.5)
+    # ── Pass 2: dense speeds, original ref_text ──────────────────────────────
+    # Even when ref and gen are similar length, the specific ref_mel value of
+    # this audio clip may cause all 7 sparse speeds to miss every valid block
+    # alignment.  A 21-point grid stepping by 0.03 shifts gen_mel by ~1 frame
+    # per step and reliably covers all residues mod 8.
+    print(f"  ↳ sparse speeds failed — trying dense grid ({len(gen_text)} chars)")
+    result = _try_speeds(ref_text, _DENSE)
+    if result:
+        return result
+
+    # ── Pass 3: trim ref_text + dense speeds ─────────────────────────────────
+    # When ref_text is longer than gen_text, trimming brings the mel-duration
+    # ratio closer to 1:1 and shifts the search space entirely.
+    trimmed_ref = _trim_ref_text(ref_text, gen_text, factor=1.2)
     if trimmed_ref != ref_text:
-        print(f"  ↳ ref_text trimmed {len(ref_text)}→{len(trimmed_ref)} chars to fix ratio")
-        result = _try_speeds(trimmed_ref)
+        print(f"  ↳ trimming ref_text {len(ref_text)}→{len(trimmed_ref)} chars + dense speeds")
+        result = _try_speeds(trimmed_ref, _SPARSE + _DENSE)
         if result:
             return result
-
-    # ── Pass 3: ultra-aggressive trim + dense speed grid ─────────────────────
-    # When ref_bytes ≈ gen_bytes (factor≈1.0) and speed=1.0:
-    #   gen_mel ≈ ref_mel  →  total ≈ 2 × ref_mel  (always even, often block-aligned)
-    # Use a much denser speed grid to maximise the chance of landing on a
-    # duration that is divisible by the U-Net's internal block size.
-    ultra_ref = _trim_ref_text(ref_text, gen_text, factor=1.2)
-    if ultra_ref != trimmed_ref:
-        print(f"  ↳ ultra-trim ref_text {len(ref_text)}→{len(ultra_ref)} chars + dense speeds")
-        # Dense grid centred on 1.0 (most likely to give total = 2×ref_mel)
-        dense_speeds = [
-            1.00, 0.97, 1.03, 0.94, 1.06, 0.91, 1.09, 0.88, 1.12,
-            0.85, 1.15, 0.82, 1.18, 0.79, 1.21, 0.76, 1.24, 0.73, 1.27,
-            0.70, 1.30,
-        ]
-        for try_speed in dense_speeds:
-            try:
-                audio_arr, sr, _ = tts.infer(
-                    ref_file=ref_file,
-                    ref_text=ultra_ref,
-                    gen_text=gen_text,
-                    speed=try_speed,
-                    remove_silence=remove_silence,
-                )
-                return audio_arr.flatten(), sr
-            except RuntimeError as exc:
-                if "Sizes of tensors must match" not in str(exc):
-                    raise
 
     # ── Pass 4: split chunk and recurse (last resort) ─────────────────────────
     if _depth >= 3 or len(gen_text) <= 4:
         print(f"  ⚠ Skipping unresolvable chunk ({len(gen_text)} chars): {gen_text[:40]!r}")
         return np.zeros(100, dtype=np.float32), 24000
 
-    # Split at the nearest word boundary (EN) or mid-point (CJK)
     mid = len(gen_text) // 2
     split_at = gen_text.rfind(" ", 1, mid) or gen_text.find(" ", mid) or mid
     left  = gen_text[:split_at].strip()
