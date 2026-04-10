@@ -315,15 +315,20 @@ def _call_gptsovits(
     if audio_arr.ndim > 1:
         audio_arr = audio_arr.mean(axis=1)   # stereo → mono
 
+    total_sec = len(audio_arr) / sr
+    ref_info  = sf.info(ref_path)
+    ref_sec   = ref_info.duration
+    ref_samp  = int(ref_sec * sr)
+    print(f"  [dbg] output={total_sec:.2f}s  ref={ref_sec:.2f}s  "
+          f"sr={sr}  samples={len(audio_arr)}/{ref_samp}")
+
     # GPT-SoVITS v2 prepends the reference audio to every output chunk.
-    # Strip it by skipping the first ref_duration worth of samples.
-    try:
-        ref_info     = sf.info(ref_path)
-        ref_samples  = int(ref_info.duration * sr)
-        if len(audio_arr) > ref_samples + sr:   # only strip if result is longer than ref alone
-            audio_arr = audio_arr[ref_samples:]
-    except Exception:
-        pass   # if info fails, keep audio as-is
+    # Strip it if the output is meaningfully longer than the reference alone.
+    if len(audio_arr) > ref_samp and total_sec > ref_sec + 0.3:
+        audio_arr = audio_arr[ref_samp:]
+        print(f"  [dbg] stripped {ref_sec:.2f}s ref prefix → {len(audio_arr)/sr:.2f}s remaining")
+    else:
+        print(f"  [dbg] no strip (output not longer than ref+0.3s)")
 
     return audio_arr, sr
 
