@@ -94,12 +94,20 @@ def _start_gptsovits() -> None:
     log_path = _PROJECT_ROOT / "data" / "gptsovits.log"
     log_file = log_path.open("a", encoding="utf-8")
 
+    # Force UTF-8 mode so GPT-SoVITS works on Chinese Windows (cp950/GBK default
+    # encoding breaks simplified Chinese characters inside the subprocess).
+    gts_env = os.environ.copy()
+    gts_env["PYTHONUTF8"]               = "1"
+    gts_env["PYTHONIOENCODING"]         = "utf-8"
+    gts_env["PYTHONLEGACYWINDOWSSTDIO"] = "0"
+
     print(f"  [..] Starting GPT-SoVITS API server on port {_GPTSOVITS_PORT} ...")
     _gptsovits_proc = subprocess.Popen(
         [py_exe, "api_v2.py",
          "-a", "127.0.0.1",
          "-p", str(_GPTSOVITS_PORT)],
         cwd=str(gts_dir),
+        env=gts_env,
         stdout=log_file,
         stderr=log_file,
     )
