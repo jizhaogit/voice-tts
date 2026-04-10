@@ -227,6 +227,7 @@ for %%P in (
     rotary-embedding-torch
     huggingface_hub
     fast-langdetect
+    split-lang
 ) do (
     runtime\python.exe -m pip install %%P ^
         --no-warn-script-location --quiet --disable-pip-version-check >nul 2>&1
