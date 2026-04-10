@@ -8,7 +8,7 @@ itself, calls GPT-SoVITS once per sentence with cut0 (no internal
 splitting), then stitches the audio together with natural pauses.
 This gives full control over pause length and avoids mid-sentence stops.
 """
-_TTS_VERSION = "2026-04-10-a"
+_TTS_VERSION = "2026-04-10-b"
 
 import io
 import os
@@ -322,13 +322,15 @@ def _call_gptsovits(
     print(f"  [dbg] output={total_sec:.2f}s  ref={ref_sec:.2f}s  "
           f"sr={sr}  samples={len(audio_arr)}/{ref_samp}")
 
-    # GPT-SoVITS v2 prepends the reference audio to every output chunk.
-    # Strip it if the output is meaningfully longer than the reference alone.
-    if len(audio_arr) > ref_samp and total_sec > ref_sec + 0.3:
+    # GPT-SoVITS v2 ALWAYS prepends the reference audio to every output chunk.
+    # Strip it unconditionally — the only guard is that some generated audio remains.
+    if len(audio_arr) > ref_samp:
         audio_arr = audio_arr[ref_samp:]
         print(f"  [dbg] stripped {ref_sec:.2f}s ref prefix → {len(audio_arr)/sr:.2f}s remaining")
     else:
-        print(f"  [dbg] no strip (output not longer than ref+0.3s)")
+        # Output ≤ reference length: generation likely failed or produced silence.
+        # Keep as-is rather than returning empty audio.
+        print(f"  [dbg] WARNING: output ({total_sec:.2f}s) ≤ ref ({ref_sec:.2f}s) — keeping as-is")
 
     return audio_arr, sr
 
