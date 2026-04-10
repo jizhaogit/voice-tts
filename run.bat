@@ -226,6 +226,7 @@ for %%P in (
     vector-quantize-pytorch
     rotary-embedding-torch
     huggingface_hub
+    fast-langdetect
 ) do (
     runtime\python.exe -m pip install %%P ^
         --no-warn-script-location --quiet --disable-pip-version-check >nul 2>&1
