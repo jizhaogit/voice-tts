@@ -103,7 +103,9 @@ def _start_gptsovits() -> None:
 
     print(f"  [..] Starting GPT-SoVITS API server on port {_GPTSOVITS_PORT} ...")
     _gptsovits_proc = subprocess.Popen(
-        [py_exe, "api_v2.py",
+        [py_exe,
+         "-X", "utf8",          # force UTF-8 mode — most reliable, beats env vars
+         "api_v2.py",
          "-a", "127.0.0.1",
          "-p", str(_GPTSOVITS_PORT)],
         cwd=str(gts_dir),

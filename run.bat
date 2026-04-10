@@ -237,6 +237,10 @@ echo.
 :: ════════════════════════════════════════════════════════
 
 :setup_env
+:: Force UTF-8 for all Python processes on this system (fixes cp950/GBK Chinese Windows)
+set PYTHONUTF8=1
+set PYTHONIOENCODING=utf-8
+
 if not exist ".env" (
     if exist ".env.example" copy .env.example .env >nul
     echo  [OK] Created .env from template.
