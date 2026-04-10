@@ -193,9 +193,13 @@ def setup_deps():
 
 
 def _install_jieba_fast_shim():
-    """If jieba_fast is not importable, create a shim that wraps jieba."""
+    """If jieba_fast is not importable, create a shim package that wraps jieba.
+
+    GPT-SoVITS imports both  'jieba_fast'  and  'jieba_fast.posseg',
+    so the shim must be a package (directory) not a single .py file.
+    """
     try:
-        import jieba_fast  # noqa: F401 — already works, nothing to do
+        import jieba_fast.posseg  # noqa: F401 — already works
         return
     except ImportError:
         pass
@@ -203,10 +207,19 @@ def _install_jieba_fast_shim():
     import sysconfig
     site_packages = sysconfig.get_path("purelib")
     if not site_packages:
+        print("  [!] Could not locate site-packages — jieba_fast shim skipped.")
         return
 
-    shim_path = Path(site_packages) / "jieba_fast.py"
-    shim_path.write_text(
+    # Remove any leftover flat-file shim from a previous run
+    flat = Path(site_packages) / "jieba_fast.py"
+    if flat.exists():
+        flat.unlink()
+
+    pkg = Path(site_packages) / "jieba_fast"
+    pkg.mkdir(exist_ok=True)
+
+    # __init__.py — mirrors the jieba top-level API
+    (pkg / "__init__.py").write_text(
         '"""jieba_fast shim: C extension unavailable, using jieba as fallback."""\n'
         "from jieba import *  # noqa\n"
         "import jieba as _j\n"
@@ -219,7 +232,16 @@ def _install_jieba_fast_shim():
         "initialize      = _j.initialize\n",
         encoding="utf-8",
     )
-    print("  [OK] jieba_fast shim installed (uses jieba as fallback).")
+
+    # posseg.py — mirrors jieba.posseg (used as  import jieba_fast.posseg as psg)
+    (pkg / "posseg.py").write_text(
+        '"""jieba_fast.posseg shim — delegates to jieba.posseg."""\n'
+        "from jieba.posseg import *  # noqa\n"
+        "from jieba.posseg import cut\n",
+        encoding="utf-8",
+    )
+
+    print("  [OK] jieba_fast shim package installed (uses jieba as fallback).")
 
 
 # ---------------------------------------------------------------------------
