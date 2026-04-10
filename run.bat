@@ -197,6 +197,14 @@ echo.
 :: ════════════════════════════════════════════════════════
 
 :check_gptsovits
+:: ffmpeg-python must always be present (GPT-SoVITS imports it as 'ffmpeg')
+runtime\python.exe -c "import ffmpeg" >nul 2>&1
+if %ERRORLEVEL% neq 0 (
+    echo  [..] Installing ffmpeg-python ^(required by GPT-SoVITS^)...
+    runtime\python.exe -m pip install ffmpeg-python --no-warn-script-location --quiet
+    echo  [OK] ffmpeg-python installed.
+)
+
 if exist "gpt-sovits\api_v2.py" (
     if exist "gpt-sovits\GPT_SoVITS\pretrained_models\gsv-v2final-pretrained\s2G2333k.pth" (
         echo  [OK] GPT-SoVITS code and models already present.

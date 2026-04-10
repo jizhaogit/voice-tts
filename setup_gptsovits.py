@@ -83,6 +83,20 @@ def setup_code():
 # ---------------------------------------------------------------------------
 
 def setup_deps():
+    # Packages that GPT-SoVITS requirements.txt sometimes misses or that pip
+    # silently skips on first pass — install them explicitly first.
+    _REQUIRED_EXTRAS = [
+        "ffmpeg-python",   # import ffmpeg  (NOT imageio-ffmpeg)
+        "librosa",
+        "pyopenjtalk",
+        "cn2an",
+        "pypinyin",
+        "jieba",
+        "LangSegment",
+    ]
+    print("  [..] Installing required extras ...")
+    _pip("install", *_REQUIRED_EXTRAS)
+
     req = GTS_DIR / "requirements.txt"
     if not req.exists():
         print("  [!] requirements.txt not found in gpt-sovits/ — skipping dep install.")
