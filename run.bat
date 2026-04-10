@@ -251,6 +251,11 @@ for %%d in (data data\voices data\documents data\generated) do (
     if not exist "%%d" mkdir "%%d"
 )
 
+:: Create GPT-SoVITS cache directories (must exist before first use)
+if not exist "gpt-sovits\GPT_SoVITS\pretrained_models\fast_langdetect" (
+    mkdir "gpt-sovits\GPT_SoVITS\pretrained_models\fast_langdetect"
+)
+
 if not exist "data\db.json" (
     echo {"voices":[],"documents":[],"jobs":[]}>data\db.json
 )

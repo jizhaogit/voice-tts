@@ -302,7 +302,7 @@ def _call_gptsovits(
         "repetition_penalty": 1.35,
     }
 
-    resp = session.post(f"{_GPTSOVITS_URL}/tts", json=payload, timeout=120)
+    resp = session.post(f"{_GPTSOVITS_URL}/tts", json=payload, timeout=300)
 
     if resp.status_code != 200:
         try:
