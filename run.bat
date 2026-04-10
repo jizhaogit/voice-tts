@@ -197,12 +197,19 @@ echo.
 :: ════════════════════════════════════════════════════════
 
 :check_gptsovits
-:: ffmpeg-python must always be present (GPT-SoVITS imports it as 'ffmpeg')
+:: Ensure GPT-SoVITS core dependencies are present
+:: (these are sometimes missed by its requirements.txt install)
 runtime\python.exe -c "import ffmpeg" >nul 2>&1
 if %ERRORLEVEL% neq 0 (
     echo  [..] Installing ffmpeg-python ^(required by GPT-SoVITS^)...
     runtime\python.exe -m pip install ffmpeg-python --no-warn-script-location --quiet
     echo  [OK] ffmpeg-python installed.
+)
+runtime\python.exe -c "import pytorch_lightning" >nul 2>&1
+if %ERRORLEVEL% neq 0 (
+    echo  [..] Installing pytorch-lightning ^(required by GPT-SoVITS^)...
+    runtime\python.exe -m pip install pytorch-lightning --no-warn-script-location --quiet
+    echo  [OK] pytorch-lightning installed.
 )
 
 if exist "gpt-sovits\api_v2.py" (
