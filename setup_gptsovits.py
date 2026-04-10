@@ -83,32 +83,34 @@ def setup_code():
 # ---------------------------------------------------------------------------
 
 def setup_deps():
-    # Packages that GPT-SoVITS requirements.txt sometimes misses or that pip
-    # silently skips on first pass — install them explicitly first.
-    _REQUIRED_EXTRAS = [
-        "ffmpeg-python",   # import ffmpeg  (NOT imageio-ffmpeg)
-        "librosa",
-        "pyopenjtalk",
-        "cn2an",
-        "pypinyin",
-        "jieba",
-        "LangSegment",
-    ]
-    print("  [..] Installing required extras ...")
-    _pip("install", *_REQUIRED_EXTRAS)
-
     req = GTS_DIR / "requirements.txt"
     if not req.exists():
-        print("  [!] requirements.txt not found in gpt-sovits/ — skipping dep install.")
+        print("  [!] requirements.txt not found in gpt-sovits/ — skipping.")
         return
 
-    print("  [..] Installing GPT-SoVITS dependencies (may take a few minutes) ...")
+    # GPT-SoVITS pins old torch/torchaudio/torchvision versions that conflict
+    # with the GPU build installed by run.bat.  Strip those lines before installing.
+    _SKIP_PREFIXES = ("torch", "torchaudio", "torchvision", "pyopenjtalk")
+
+    lines = req.read_text(encoding="utf-8", errors="ignore").splitlines()
+    filtered = [
+        ln for ln in lines
+        if ln.strip() and not ln.strip().startswith("#")
+        and not any(ln.strip().lower().startswith(p) for p in _SKIP_PREFIXES)
+    ]
+
+    filtered_req = GTS_DIR / "_requirements_filtered.txt"
+    filtered_req.write_text("\n".join(filtered), encoding="utf-8")
+
+    print(f"  [..] Installing {len(filtered)} GPT-SoVITS dependencies ...")
     result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-r", str(req),
+        [sys.executable, "-m", "pip", "install", "-r", str(filtered_req),
          "--no-warn-script-location", "--quiet", "--disable-pip-version-check"],
     )
+    filtered_req.unlink(missing_ok=True)
+
     if result.returncode != 0:
-        print("  [!] Some deps failed — generation may still work if core packages are present.")
+        print("  [!] Some deps failed — continuing anyway.")
     else:
         print("  [OK] Dependencies installed.")
 
