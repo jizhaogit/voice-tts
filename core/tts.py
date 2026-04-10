@@ -5,7 +5,7 @@ No fine-tuning required: inference is zero-shot.
 
 Model download (~1.2 GB) happens automatically on first call to infer().
 """
-_TTS_VERSION = "2026-04-09-f"  # bump this to confirm which copy is running
+_TTS_VERSION = "2026-04-09-g"  # bump this to confirm which copy is running
 import io
 import os
 import re
@@ -381,6 +381,67 @@ def _apply_speed(audio: np.ndarray, sample_rate: int, speed: float) -> np.ndarra
 
 # ── Core inference ────────────────────────────────────────────────────────────
 
+# F5-TTS switches to multi-batch (internal chaining) when ref_mel + gen_mel
+# exceeds this threshold.  Multi-batch mode has a cache-corruption bug: the
+# intermediate buffer from the first sub-batch leaks into the model state, so
+# every subsequent tts.infer() call for the SAME session sees a wrong ref_mel
+# (e.g. 2005 instead of 1226) and fails unconditionally.
+# We keep total_mel BELOW this limit so F5-TTS always uses 1 batch.
+_F5_SINGLE_BATCH_THRESHOLD = 1990   # conservative; observed threshold ~2100
+
+
+def _get_ref_mel(ref_file: str) -> int:
+    """Return the approximate mel-frame count of the reference WAV file.
+
+    F5-TTS uses hop_length=256 at 24 kHz → 93.75 frames/second ≈ 100 fps.
+    We read the actual audio duration via soundfile (fast, header-only).
+    """
+    try:
+        import soundfile as sf
+        info = sf.info(ref_file)
+        return max(1, int(info.duration * 24000 / 256))   # exact hop_length
+    except Exception:
+        return 1200   # fallback ≈ 13 s clip
+
+
+def _valid_speeds_for_alignment(
+    ref_mel: int,
+    gen_mel_base: float,
+    block_sizes: tuple = (2, 4, 8, 16),
+    speed_lo: float = 0.70,
+    speed_hi: float = 1.30,
+) -> list[float]:
+    """Return speeds (sorted by closeness to 1.0) that produce a total
+    mel-length (ref_mel + gen_mel) divisible by each candidate block size.
+
+    F5-TTS's U-Net requires total_mel % block_size == 0.  Varying speed
+    changes gen_mel by integer steps, so we can analytically find the exact
+    speeds that satisfy this constraint without brute-force search.
+    """
+    seen: set[float] = set()
+    results: list[float] = []
+
+    for bs in block_sizes:
+        required_rem = (-ref_mel) % bs          # gen_mel must have this remainder
+        base_k = int(gen_mel_base) // bs
+        for offset in range(-8, 12):            # search ±8 multiples away
+            k = base_k + offset
+            if k <= 0:
+                continue
+            gen_mel = k * bs + required_rem
+            if gen_mel <= 0:
+                continue
+            if (ref_mel + gen_mel) % bs != 0:   # sanity check
+                continue
+            speed = round(gen_mel_base / gen_mel, 4)
+            if speed_lo <= speed <= speed_hi and speed not in seen:
+                seen.add(speed)
+                results.append(speed)
+
+    results.sort(key=lambda s: abs(s - 1.0))   # try near-1.0 first
+    return results
+
+
 def _trim_ref_text(ref_text: str, gen_text: str, factor: float = 2.5) -> str:
     """Shorten ref_text so its UTF-8 byte length ≤ factor × gen_text bytes.
 
@@ -430,67 +491,78 @@ def _infer_chunk(
     speed: float,
     remove_silence: bool = False,
     _depth: int = 0,
+    _ref_mel: int | None = None,
 ) -> tuple[np.ndarray, int]:
-    """Infer one text chunk; retries with varied speeds and splits on mismatch.
+    """Infer one text chunk with multi-pass speed search.
 
-    WHY speed-jitter works
-    ─────────────────────
-    F5-TTS computes the target mel duration as:
-        duration = ref_mel_len + round(ref_mel_len / ref_bytes * gen_bytes / speed)
+    ROOT CAUSE OF FAILURES (discovered from tts_run.log analysis)
+    ──────────────────────────────────────────────────────────────
+    F5-TTS has two failure modes:
 
-    When the reference text is long (360+ bytes for 120 Chinese chars) but the
-    gen chunk is short (< 30 chars = 90 bytes), the target_mel_len is tiny.
-    Due to block-padding inside the diffusion model, the actual output tensor
-    may not match this requested size → RuntimeError "Sizes of tensors must
-    match except in dimension 2."
+    1. Multi-batch chaining bug: when ref_mel + gen_mel > ~2000, F5-TTS splits
+       the sequence internally into sub-batches and chains them.  The chaining
+       code has a cache-corruption bug — an intermediate 2005-frame buffer leaks
+       into model state, so every subsequent tts.infer() call in the session
+       sees ref_mel=2005 instead of the actual ref_mel (e.g. 1226).  This
+       causes ALL subsequent chunks to fail, producing a 0-second output file.
 
-    Varying the speed slightly changes the computed duration, shifting it into
-    a block-aligned value. Trying 7 candidate speeds at each depth almost
-    always finds one that works without splitting.
+       Fix: keep ref_mel + gen_mel < _F5_SINGLE_BATCH_THRESHOLD (1990) so
+       F5-TTS always uses a single inference batch.  Chunk sizes are set
+       accordingly in generate_speech() before calling us.
+
+    2. U-Net block alignment: the diffusion U-Net requires total_mel to be
+       divisible by its downsampling factor (empirically 2, 4, 8, or 16).
+       At speed=1.0 the alignment is usually satisfied, but not always.
+
+       Fix: analytically compute the exact speeds that produce a block-aligned
+       total, then fall back to a fine 0.01-step grid covering all residues.
     """
     # Hard guard: skip text that contains no letters or digits at all.
     if not any(c.isalpha() or c.isdigit() for c in gen_text):
         return np.zeros(100, dtype=np.float32), 24000
 
-    # Hard guard: skip text too short for F5-TTS regardless of speed.
     speakable_chars = sum(1 for c in gen_text if c.isalpha() or c.isdigit())
     if speakable_chars < 4:
         print(f"  ⚠ Skipping too-short chunk ({speakable_chars} speakable chars): {gen_text!r}")
         return np.zeros(100, dtype=np.float32), 24000
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    # Read actual ref audio mel length once (expensive syscall; cached via arg)
+    ref_mel = _ref_mel if _ref_mel is not None else _get_ref_mel(ref_file)
 
-    # Sparse grid: 7 candidates spread across ±40 % range
-    _SPARSE = [1.0, 0.85, 1.15, 0.70, 1.30, 0.55, 1.50]
-    # Dense grid: 21 candidates in 0.03 steps around 1.0
-    # Stepping by 0.03 changes gen_mel by ~1 frame per step for typical audio,
-    # covering all residues mod 8 (the U-Net block size) within a few attempts.
-    _DENSE  = [
-        1.00, 0.97, 1.03, 0.94, 1.06, 0.91, 1.09, 0.88, 1.12,
-        0.85, 1.15, 0.82, 1.18, 0.79, 1.21, 0.76, 1.24, 0.73, 1.27,
-        0.70, 1.30,
-    ]
+    # ── Speed candidates ──────────────────────────────────────────────────────
+    # Priority 1: analytically exact speeds for common block sizes (2, 4, 8, 16)
+    gen_mel_base = ref_mel * len(gen_text) / max(1, len(ref_text))
+    _EXACT = _valid_speeds_for_alignment(ref_mel, gen_mel_base)
 
-    # Keywords that identify a mel/tensor size-mismatch error from F5-TTS.
-    # Listed broadly because PyTorch error wording varies across versions and
-    # locales (e.g. Chinese Windows may produce a different message).
-    _SIZE_MISMATCH_HINTS = (
-        "sizes of tensors must match",
-        "size mismatch",
-        "shape mismatch",
-        "expected size",
-        "the size of tensor",
-        "dimension",
+    # Priority 2: coarse candidates that catch easy cases fast
+    _SPARSE = [1.00, 0.97, 1.03, 0.94, 1.06, 0.91, 1.09, 0.88, 1.12]
+
+    # Priority 3: fine 0.01-step grid — guarantees covering every residue mod 16
+    # Sorted by distance from 1.0 so near-unity speeds are tried first.
+    _FINE = sorted(
+        [round(0.70 + i * 0.01, 2) for i in range(61)],
+        key=lambda s: abs(s - 1.0),
     )
 
-    _first_exc_logged: list[bool] = [False]   # mutable cell for closure
+    # ── Error filter ──────────────────────────────────────────────────────────
+    _SIZE_MISMATCH_HINTS = (
+        "sizes of tensors must match",
+        "size mismatch", "shape mismatch",
+        "expected size", "the size of tensor", "dimension",
+    )
+
+    _first_exc_logged: list[bool] = [False]
 
     def _is_size_mismatch(exc: RuntimeError) -> bool:
-        msg = str(exc).lower()
-        return any(hint in msg for hint in _SIZE_MISMATCH_HINTS)
+        return any(h in str(exc).lower() for h in _SIZE_MISMATCH_HINTS)
 
     def _try_speeds(use_ref_text: str, candidates: list) -> tuple[np.ndarray, int] | None:
+        seen: set[float] = set()
         for try_speed in candidates:
+            s = round(try_speed, 3)
+            if s in seen:
+                continue
+            seen.add(s)
             try:
                 audio_arr, sr, _ = tts.infer(
                     ref_file=ref_file,
@@ -502,40 +574,35 @@ def _infer_chunk(
                 return audio_arr.flatten(), sr
             except RuntimeError as exc:
                 if not _first_exc_logged[0]:
-                    # Log the raw error once so we can diagnose unexpected messages
-                    print(f"  [dbg] first RuntimeError at speed={try_speed:.2f}: {exc!r}")
+                    print(f"  [dbg] RuntimeError speed={try_speed:.3f}: {exc!r}")
                     _first_exc_logged[0] = True
                 if not _is_size_mismatch(exc):
-                    raise   # unrelated error (OOM, etc.) — propagate immediately
+                    raise
         return None
 
-    # ── Pass 1: sparse speeds, original ref_text ─────────────────────────────
-    result = _try_speeds(ref_text, _SPARSE)
+    # ── Pass 1: exact + sparse speeds ────────────────────────────────────────
+    result = _try_speeds(ref_text, _EXACT + _SPARSE)
     if result:
         return result
 
-    # ── Pass 2: dense speeds, original ref_text ──────────────────────────────
-    # Even when ref and gen are similar length, the specific ref_mel value of
-    # this audio clip may cause all 7 sparse speeds to miss every valid block
-    # alignment.  A 21-point grid stepping by 0.03 shifts gen_mel by ~1 frame
-    # per step and reliably covers all residues mod 8.
-    print(f"  ↳ sparse speeds failed — trying dense grid ({len(gen_text)} chars)")
-    result = _try_speeds(ref_text, _DENSE)
+    # ── Pass 2: full fine grid ────────────────────────────────────────────────
+    print(f"  ↳ exact+sparse failed — fine grid ({len(gen_text)} chars, ref_mel={ref_mel})")
+    result = _try_speeds(ref_text, _FINE)
     if result:
         return result
 
-    # ── Pass 3: trim ref_text + dense speeds ─────────────────────────────────
-    # When ref_text is longer than gen_text, trimming brings the mel-duration
-    # ratio closer to 1:1 and shifts the search space entirely.
+    # ── Pass 3: trim ref_text + fine grid ────────────────────────────────────
     trimmed_ref = _trim_ref_text(ref_text, gen_text, factor=1.2)
     if trimmed_ref != ref_text:
-        print(f"  ↳ trimming ref_text {len(ref_text)}→{len(trimmed_ref)} chars + dense speeds")
-        result = _try_speeds(trimmed_ref, _SPARSE + _DENSE)
+        gen_mel_base2 = ref_mel * len(gen_text) / max(1, len(trimmed_ref))
+        exact2 = _valid_speeds_for_alignment(ref_mel, gen_mel_base2)
+        print(f"  ↳ trimming ref_text {len(ref_text)}→{len(trimmed_ref)} chars + fine grid")
+        result = _try_speeds(trimmed_ref, exact2 + _FINE)
         if result:
             return result
 
-    # ── Pass 4: split chunk and recurse (last resort) ─────────────────────────
-    if _depth >= 3 or len(gen_text) <= 4:
+    # ── Pass 4: split chunk and recurse ──────────────────────────────────────
+    if _depth >= 2 or len(gen_text) <= 8:
         print(f"  ⚠ Skipping unresolvable chunk ({len(gen_text)} chars): {gen_text[:40]!r}")
         return np.zeros(100, dtype=np.float32), 24000
 
@@ -550,7 +617,7 @@ def _infer_chunk(
     arrays, sr = [], 24000
     for part in (left, right):
         arr, sr = _infer_chunk(tts, ref_file, ref_text, part, speed,
-                               remove_silence, _depth + 1)
+                               remove_silence, _depth + 1, ref_mel)
         arrays.append(arr)
     return np.concatenate(arrays), sr
 
@@ -593,13 +660,31 @@ def _generate_speech_inner(
     preview    = gen_text[:80].replace('\n', '↵')
     print(f"  gen_text: {char_count} chars — {preview!r}")
 
-    # Each chunk must be at least as long as ref_text so the F5-TTS
-    # mel-duration formula produces a gen contribution that is large enough
-    # for the U-Net block alignment to be satisfiable at a normal speed.
-    # Cap at max_chars//2 so we don't create chunks that are too huge.
-    max_chars   = int(os.getenv("TTS_CHUNK_SIZE", 250))
-    min_chunk   = max(40, min(max_chars // 2, len(ref_text)))
-    print(f"  ref_text: {len(ref_text)} chars → min_chunk={min_chunk}")
+    # ── Convert ref audio to WAV so we can read its mel length ────────────────
+    wav_ref, wav_is_temp = _to_wav(ref_audio_path)
+
+    # ── Compute safe chunk sizes based on actual ref audio length ─────────────
+    # F5-TTS enters multi-batch chaining mode when ref_mel + gen_mel exceeds
+    # ~2100 frames.  That chaining code has a cache-corruption bug: on its
+    # first failure it stores a stale 2005-frame value in model state, making
+    # every subsequent tts.infer() call fail (observed in tts_run.log).
+    #
+    # Fix: cap chunk size so even at the lowest speed (0.70) the total stays
+    # below _F5_SINGLE_BATCH_THRESHOLD.  This guarantees single-batch mode.
+    #
+    #   gen_mel = ref_mel × gen_chars / ref_chars / speed
+    #   At speed=0.70: gen_mel_max = (threshold − ref_mel) × 0.70
+    #   max_chars = gen_mel_max × ref_chars / ref_mel
+    ref_mel  = _get_ref_mel(wav_ref)
+    ref_chars = max(1, len(ref_text))
+    head_room = max(100, _F5_SINGLE_BATCH_THRESHOLD - ref_mel)   # gen frames allowed
+    safe_max  = max(20, int(head_room * 0.70 * ref_chars / ref_mel))
+
+    env_max   = int(os.getenv("TTS_CHUNK_SIZE", 250))
+    max_chars = min(safe_max, env_max)
+    min_chunk = max(20, min(max_chars, ref_chars))    # also keep chunks ≥ ref_text length
+    print(f"  ref_mel={ref_mel}  ref_chars={ref_chars}  safe_max={safe_max}"
+          f"  → max_chars={max_chars}  min_chunk={min_chunk}")
 
     chunks = chunk_text(gen_text, max_chars=max_chars, min_chars=min_chunk)
     total = len(chunks)
@@ -620,19 +705,12 @@ def _generate_speech_inner(
     all_audio: list[np.ndarray] = []
     sample_rate = 24000
 
-    # Convert reference audio to WAV up-front using the bundled ffmpeg binary
-    # (full path — no PATH lookup).  This prevents [WinError 2] from torchaudio
-    # or f5-tts trying to shell out to 'ffmpeg' by name for non-WAV formats.
-    wav_ref, wav_is_temp = _to_wav(ref_audio_path)
     try:
-        # Always generate at speed=1.0 inside F5-TTS.
-        # Passing non-1.0 values changes the internal mel-spectrogram target
-        # duration and frequently causes tensor-size mismatches (especially
-        # speed < 0.8).  We apply the user's speed afterwards via ffmpeg atempo
-        # which is pitch-preserving and works reliably for any value 0.5–2.0.
         for i, chunk in enumerate(chunks):
             audio_arr, sr = _infer_chunk(
-                tts, wav_ref, ref_text, chunk, speed=1.0, remove_silence=remove_silence
+                tts, wav_ref, ref_text, chunk,
+                speed=1.0, remove_silence=remove_silence,
+                _ref_mel=ref_mel,
             )
             sample_rate = sr
             all_audio.append(audio_arr)

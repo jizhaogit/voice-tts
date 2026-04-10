@@ -11,7 +11,10 @@
       "Bash(node --input-type=module)",
       "Bash(node -e ':*)",
       "Bash(python -c ':*)",
-      "Bash(runtimepython.exe -c ':*)"
+      "Bash(runtimepython.exe -c ':*)",
+      "Bash(powershell -Command \"Get-Content 'C:\\\\Users\\\\T909046\\\\Desktop\\\\tts_run.log' | Select-Object -Last 150\")",
+      "Bash(powershell -Command \"Select-String -Path 'C:\\\\Users\\\\T909046\\\\Desktop\\\\tts_run.log' -Pattern '\\\\[dbg\\\\]|Skipping|sparse speeds|trimming ref' -Encoding UTF8 | Select-Object -First 60\")",
+      "Bash(powershell -Command \"Select-String -Path 'C:\\\\Users\\\\T909046\\\\Desktop\\\\tts_run.log' -Pattern 'sparse speeds|trimming ref|Skipping unresolvable' -Encoding UTF8 | Measure-Object\")"
     ]
   }
 }
