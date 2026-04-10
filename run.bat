@@ -197,24 +197,27 @@ echo.
 :: ════════════════════════════════════════════════════════
 
 :check_gptsovits
-:: Ensure all GPT-SoVITS dependencies are present.
-:: These are checked as a group — install only if any are missing.
-runtime\python.exe -c "import ffmpeg, pytorch_lightning, librosa, jieba, pypinyin, cn2an, LangSegment, onnxruntime, pyopenjtalk" >nul 2>&1
-if %ERRORLEVEL% neq 0 (
-    echo  [..] Installing GPT-SoVITS dependencies...
-    runtime\python.exe -m pip install ^
-        ffmpeg-python ^
-        pytorch-lightning ^
-        librosa ^
-        jieba ^
-        pypinyin ^
-        cn2an ^
-        LangSegment ^
-        onnxruntime ^
-        pyopenjtalk ^
-        --no-warn-script-location --quiet
-    echo  [OK] GPT-SoVITS dependencies installed.
+:: Install GPT-SoVITS dependencies one at a time so a single build failure
+:: does not block the rest.  pyopenjtalk is skipped — it requires a C++
+:: compiler and is only needed for Japanese TTS, not Chinese or English.
+echo  [..] Checking GPT-SoVITS dependencies...
+for %%P in (
+    ffmpeg-python
+    pytorch-lightning
+    librosa
+    jieba
+    pypinyin
+    cn2an
+    LangSegment
+    onnxruntime
+) do (
+    runtime\python.exe -m pip install %%P ^
+        --no-warn-script-location --quiet --disable-pip-version-check >nul 2>&1
+    if !ERRORLEVEL! neq 0 (
+        echo  [!] Warning: failed to install %%P -- skipping.
+    )
 )
+echo  [OK] GPT-SoVITS dependencies checked.
 
 if exist "gpt-sovits\api_v2.py" (
     if exist "gpt-sovits\GPT_SoVITS\pretrained_models\gsv-v2final-pretrained\s2G2333k.pth" (
