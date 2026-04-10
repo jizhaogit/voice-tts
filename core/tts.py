@@ -112,6 +112,57 @@ def _to_wav(audio_path: str, target_sr: int = 24000) -> tuple[str, bool]:
 
 
 # ---------------------------------------------------------------------------
+# Reference audio trimmer
+# ---------------------------------------------------------------------------
+
+_REF_MIN_SEC = 3.0
+_REF_MAX_SEC = 10.0
+_REF_TARGET_SEC = 9.0   # trim long clips to this length
+
+
+def _ensure_ref_duration(wav_path: str) -> tuple[str, bool]:
+    """Ensure the reference WAV is within GPT-SoVITS's 3–10 s requirement.
+
+    - If duration is already in range: return as-is (is_temp=False).
+    - If duration > 10 s: trim to 9 s and return a temp file (is_temp=True).
+    - If duration < 3 s: raise ValueError so the user gets a clear message.
+    """
+    import soundfile as sf
+    info = sf.info(wav_path)
+    dur  = info.duration
+
+    if _REF_MIN_SEC <= dur <= _REF_MAX_SEC:
+        return wav_path, False
+
+    if dur < _REF_MIN_SEC:
+        raise ValueError(
+            f"Reference audio is only {dur:.1f}s — GPT-SoVITS requires at least "
+            f"{_REF_MIN_SEC:.0f}s. Please upload a longer clip in the Voice tab."
+        )
+
+    # Too long — trim with ffmpeg
+    ffmpeg_exe = _get_ffmpeg_exe()
+    if ffmpeg_exe is None:
+        print(f"  ⚠ Ref audio is {dur:.1f}s (max {_REF_MAX_SEC}s) but ffmpeg not "
+              f"found to trim it. Generation may fail.")
+        return wav_path, False
+
+    print(f"  ⚠ Ref audio is {dur:.1f}s — trimming to {_REF_TARGET_SEC}s for GPT-SoVITS.")
+    tmp = Path(tempfile.mktemp(suffix=".wav"))
+    try:
+        subprocess.run(
+            [ffmpeg_exe, "-y", "-i", wav_path,
+             "-t", str(_REF_TARGET_SEC),
+             "-ar", "24000", "-ac", "1", "-f", "wav", str(tmp)],
+            capture_output=True, check=True,
+        )
+        return str(tmp), True
+    except Exception as exc:
+        print(f"  ⚠ Trim failed: {exc} — using original (may be rejected by GPT-SoVITS).")
+        return wav_path, False
+
+
+# ---------------------------------------------------------------------------
 # Language detection
 # ---------------------------------------------------------------------------
 
@@ -284,6 +335,14 @@ def _generate_speech_inner(
         raise ValueError("gen_text is empty — nothing to synthesise.")
 
     wav_ref, wav_is_temp = _to_wav(ref_audio_path)
+
+    # Trim/validate reference audio to GPT-SoVITS's 3–10 s requirement
+    wav_ref2, wav_is_temp2 = _ensure_ref_duration(wav_ref)
+    if wav_is_temp2 and wav_ref2 != wav_ref:
+        if wav_is_temp:
+            Path(wav_ref).unlink(missing_ok=True)
+        wav_ref      = wav_ref2
+        wav_is_temp  = True
 
     try:
         ref_path    = str(Path(wav_ref).resolve())
