@@ -5,11 +5,12 @@ No fine-tuning required: inference is zero-shot.
 
 Model download (~1.2 GB) happens automatically on first call to infer().
 """
-_TTS_VERSION = "2026-04-09-d"  # bump this to confirm which copy is running
+_TTS_VERSION = "2026-04-09-f"  # bump this to confirm which copy is running
 import io
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Callable
@@ -18,6 +19,52 @@ import numpy as np
 
 # Lazy-loaded singletons
 _tts_instance = None
+
+
+# ── Console + file tee ────────────────────────────────────────────────────────
+
+class _Tee:
+    """Write every print() to both the real stdout and a log file.
+
+    Usage (as a context manager):
+        with _Tee(log_path):
+            ...  # all print() output goes to console AND log file
+    """
+    def __init__(self, log_path: Path):
+        self._log_path = log_path
+        self._real_stdout = sys.stdout
+        self._file = None
+
+    def __enter__(self):
+        self._log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = self._log_path.open("a", encoding="utf-8", buffering=1)
+        import datetime
+        self._file.write(f"\n{'='*60}\n"
+                         f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] "
+                         f"tts.py {_TTS_VERSION}\n"
+                         f"{'='*60}\n")
+        sys.stdout = self
+        return self
+
+    def write(self, data: str):
+        self._real_stdout.write(data)
+        if self._file:
+            self._file.write(data)
+
+    def flush(self):
+        self._real_stdout.flush()
+        if self._file:
+            self._file.flush()
+
+    def __exit__(self, *_):
+        sys.stdout = self._real_stdout
+        if self._file:
+            self._file.close()
+            self._file = None
+
+    # Proxy any attribute access the real stdout needs (e.g. .encoding)
+    def __getattr__(self, name: str):
+        return getattr(self._real_stdout, name)
 
 
 # ── ffmpeg helpers ────────────────────────────────────────────────────────────
@@ -424,6 +471,24 @@ def _infer_chunk(
         0.70, 1.30,
     ]
 
+    # Keywords that identify a mel/tensor size-mismatch error from F5-TTS.
+    # Listed broadly because PyTorch error wording varies across versions and
+    # locales (e.g. Chinese Windows may produce a different message).
+    _SIZE_MISMATCH_HINTS = (
+        "sizes of tensors must match",
+        "size mismatch",
+        "shape mismatch",
+        "expected size",
+        "the size of tensor",
+        "dimension",
+    )
+
+    _first_exc_logged: list[bool] = [False]   # mutable cell for closure
+
+    def _is_size_mismatch(exc: RuntimeError) -> bool:
+        msg = str(exc).lower()
+        return any(hint in msg for hint in _SIZE_MISMATCH_HINTS)
+
     def _try_speeds(use_ref_text: str, candidates: list) -> tuple[np.ndarray, int] | None:
         for try_speed in candidates:
             try:
@@ -436,8 +501,12 @@ def _infer_chunk(
                 )
                 return audio_arr.flatten(), sr
             except RuntimeError as exc:
-                if "Sizes of tensors must match" not in str(exc):
-                    raise
+                if not _first_exc_logged[0]:
+                    # Log the raw error once so we can diagnose unexpected messages
+                    print(f"  [dbg] first RuntimeError at speed={try_speed:.2f}: {exc!r}")
+                    _first_exc_logged[0] = True
+                if not _is_size_mismatch(exc):
+                    raise   # unrelated error (OOM, etc.) — propagate immediately
         return None
 
     # ── Pass 1: sparse speeds, original ref_text ─────────────────────────────
@@ -498,7 +567,24 @@ def generate_speech(
 
     Returns (audio_bytes, extension) where extension is 'mp3' or 'wav'.
     progress_cb(current_chunk, total_chunks) is called after each chunk.
+    All console output is also mirrored to  data/tts_run.log  so that
+    long runs whose top lines scroll off the console window can be reviewed.
     """
+    _log_path = Path(__file__).parent.parent / "data" / "tts_run.log"
+    with _Tee(_log_path):
+        return _generate_speech_inner(
+            ref_audio_path, ref_text, gen_text, speed, remove_silence, progress_cb
+        )
+
+
+def _generate_speech_inner(
+    ref_audio_path: str,
+    ref_text: str,
+    gen_text: str,
+    speed: float = 1.0,
+    remove_silence: bool = False,
+    progress_cb: Callable[[int, int], None] | None = None,
+) -> tuple[bytes, str]:
     tts = _get_tts()
 
     # ── Debug: confirm version + show what text arrived ───────────────────────
