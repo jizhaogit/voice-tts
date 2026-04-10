@@ -676,6 +676,32 @@ def _generate_speech_inner(
     #   At speed=0.70: gen_mel_max = (threshold − ref_mel) × 0.70
     #   max_chars = gen_mel_max × ref_chars / ref_mel
     ref_mel  = _get_ref_mel(wav_ref)
+
+    # ── Auto-trim ref_text to match actual audio speaking rate ────────────────
+    # F5-TTS uses ref_text length to estimate the speaker's talking speed.
+    # If ref_text has more characters than the audio actually contains speech,
+    # F5-TTS thinks the speaker is faster than they really are and generates
+    # compressed, unintelligible audio.
+    #
+    # Chinese speech: ~6 chars / second is a realistic average.
+    # We allow up to 8 chars/sec before trimming (30 % headroom).
+    _CHARS_PER_SEC_MAX = 8.0          # above this → ref_text is likely too long
+    audio_sec = ref_mel * 256 / 24000  # hop_length=256, sr=24000
+    max_ref_chars_by_dur = int(audio_sec * _CHARS_PER_SEC_MAX)
+    if len(ref_text) > max_ref_chars_by_dur:
+        trimmed = ref_text.encode("utf-8")[:max_ref_chars_by_dur * 3]\
+                          .decode("utf-8", errors="ignore").strip()
+        for punct in ("。", "！", "？", ".", "!", "?"):
+            cut = trimmed.rfind(punct)
+            if cut >= len(trimmed) // 2:
+                trimmed = trimmed[:cut + 1].strip()
+                break
+        print(f"  ⚠ ref_text too long for {audio_sec:.1f}s audio "
+              f"({len(ref_text)} chars → trimming to {len(trimmed)}).")
+        print(f"     For best quality, manually shorten your ref_text to "
+              f"~{int(audio_sec * 6)} chars in the Voice tab.")
+        ref_text = trimmed
+
     ref_chars = max(1, len(ref_text))
     head_room = max(100, _F5_SINGLE_BATCH_THRESHOLD - ref_mel)   # gen frames allowed
     safe_max  = max(20, int(head_room * 0.70 * ref_chars / ref_mel))
