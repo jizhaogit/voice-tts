@@ -144,11 +144,27 @@ def _stop_gptsovits() -> None:
         print("  [OK] GPT-SoVITS stopped.")
 
 
+_watchdog_active = False
+
+def _watchdog() -> None:
+    """Restart GPT-SoVITS automatically if it crashes."""
+    global _watchdog_active
+    _watchdog_active = True
+    while _watchdog_active:
+        time.sleep(5)
+        if not _watchdog_active:
+            break
+        if not _gptsovits_is_running():
+            print("  [!] GPT-SoVITS is not responding — restarting ...")
+            _start_gptsovits()
+
+
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start GPT-SoVITS in a thread so it doesn't block the event loop
+    # Start GPT-SoVITS then launch watchdog to auto-restart on crash
     threading.Thread(target=_start_gptsovits, daemon=False).start()
+    threading.Thread(target=_watchdog, daemon=True).start()
 
     # Reset any interrupted jobs from a previous crash
     from core.db import read_db, write_db
@@ -164,6 +180,8 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    global _watchdog_active
+    _watchdog_active = False
     _stop_gptsovits()
 
 

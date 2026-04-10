@@ -345,6 +345,17 @@ def _generate_speech_inner(
     if not gen_text:
         raise ValueError("gen_text is empty — nothing to synthesise.")
 
+    # Check GPT-SoVITS server is reachable before doing any work
+    import socket as _socket
+    with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
+        _s.settimeout(2)
+        if _s.connect_ex(("127.0.0.1", int(os.getenv("GPTSOVITS_PORT", 9880)))) != 0:
+            raise RuntimeError(
+                "GPT-SoVITS server is not running on port 9880.\n"
+                "It should restart automatically in a few seconds — please try again.\n"
+                "If the problem persists, restart run.bat."
+            )
+
     wav_ref, wav_is_temp = _to_wav(ref_audio_path)
 
     # Trim/validate reference audio to GPT-SoVITS's 3–10 s requirement
