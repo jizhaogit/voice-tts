@@ -3,19 +3,22 @@
 Architecture
 ------------
 GPT-SoVITS runs as a separate process (started by main.py) that listens
-on http://127.0.0.1:9880.  This module calls that API with the reference
-audio path + transcript and receives raw WAV bytes in return.
-
-GPT-SoVITS handles text chunking internally (text_split_method="cut5"),
-so none of the F5-TTS chunking/alignment complexity is needed here.
+on http://127.0.0.1:9880.  This module splits the text into sentences
+itself, calls GPT-SoVITS once per sentence with cut0 (no internal
+splitting), then stitches the audio together with natural pauses.
+This gives full control over pause length and avoids mid-sentence stops.
 """
-_TTS_VERSION = "2026-04-09-h"
+_TTS_VERSION = "2026-04-10-a"
 
+import io
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+import numpy as np
 
 # ---------------------------------------------------------------------------
 # Console + file tee  (keeps full log in  data/tts_run.log)
@@ -125,6 +128,74 @@ def _detect_lang(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Text splitting  (our own — bypasses GPT-SoVITS internal splitting)
+# ---------------------------------------------------------------------------
+
+# Silence to append after each segment (seconds)
+_PAUSE_SENTENCE  = 0.40   # after 。！？.!?
+_PAUSE_CLAUSE    = 0.15   # after ，,;；
+_PAUSE_PARAGRAPH = 0.70   # after a blank line / paragraph break
+
+
+def _split_segments(text: str) -> list[tuple[str, float]]:
+    """Split *text* into (segment, pause_after_seconds) pairs.
+
+    Splitting rules (in priority order):
+      1. Blank lines → paragraph break (longest pause)
+      2. Sentence-ending punctuation → sentence pause
+      3. Clause punctuation (comma/semicolon) only when segment > 60 chars
+         to avoid over-splitting short phrases
+
+    Returns only segments that contain at least one speakable character.
+    """
+    def _speakable(s: str) -> bool:
+        return any(c.isalpha() or c.isdigit() for c in s)
+
+    results: list[tuple[str, float]] = []
+
+    # Step 1: split on paragraph breaks first
+    paragraphs = re.split(r'\n{2,}', text.strip())
+
+    for p_idx, para in enumerate(paragraphs):
+        para = para.strip()
+        if not para:
+            continue
+
+        # Step 2: split paragraph into sentences at 。！？.!?
+        # Keep the punctuation attached to the preceding segment.
+        raw = re.split(r'(?<=[。！？.!?])\s*', para)
+        sentences = [s.strip() for s in raw if s.strip()]
+
+        for s_idx, sent in enumerate(sentences):
+            if not _speakable(sent):
+                continue
+
+            is_last_sent = (s_idx == len(sentences) - 1)
+            is_last_para = (p_idx == len(paragraphs) - 1)
+
+            # Determine base pause
+            if is_last_sent and not is_last_para:
+                base_pause = _PAUSE_PARAGRAPH
+            elif sent[-1] in "。！？.!?":
+                base_pause = _PAUSE_SENTENCE
+            else:
+                base_pause = _PAUSE_CLAUSE
+
+            # Step 3: if sentence is long, sub-split at clause punctuation
+            if len(sent) > 60:
+                clauses = re.split(r'(?<=[，,;；])\s*', sent)
+                clauses = [c.strip() for c in clauses if c.strip() and _speakable(c)]
+                for c_idx, clause in enumerate(clauses):
+                    is_last_clause = (c_idx == len(clauses) - 1)
+                    pause = base_pause if is_last_clause else _PAUSE_CLAUSE
+                    results.append((clause, pause))
+            else:
+                results.append((sent, base_pause))
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Public API  (same signature as the old F5-TTS wrapper)
 # ---------------------------------------------------------------------------
 
@@ -147,6 +218,54 @@ def generate_speech(
         )
 
 
+def _call_gptsovits(
+    session,
+    ref_path: str,
+    ref_text: str,
+    gen_text: str,
+    text_lang: str,
+    prompt_lang: str,
+    speed: float,
+) -> np.ndarray:
+    """Call GPT-SoVITS API for a single segment. Returns float32 audio array."""
+    import soundfile as sf
+
+    payload = {
+        "text":               gen_text,
+        "text_lang":          text_lang,
+        "ref_audio_path":     ref_path,
+        "prompt_text":        ref_text,
+        "prompt_lang":        prompt_lang,
+        "top_k":              5,
+        "top_p":              1.0,
+        "temperature":        1.0,
+        "text_split_method":  "cut0",   # we handle splitting ourselves
+        "batch_size":         1,
+        "speed_factor":       float(speed),
+        "split_bucket":       False,
+        "fragment_interval":  0.0,
+        "seed":               -1,
+        "media_type":         "wav",
+        "streaming_mode":     False,
+        "parallel_infer":     True,
+        "repetition_penalty": 1.35,
+    }
+
+    resp = session.post(f"{_GPTSOVITS_URL}/tts", json=payload, timeout=120)
+
+    if resp.status_code != 200:
+        try:
+            detail = resp.json()
+        except Exception:
+            detail = resp.text[:200]
+        raise RuntimeError(f"GPT-SoVITS HTTP {resp.status_code}: {detail}")
+
+    audio_arr, sr = sf.read(io.BytesIO(resp.content), dtype="float32")
+    if audio_arr.ndim > 1:
+        audio_arr = audio_arr.mean(axis=1)   # stereo → mono
+    return audio_arr, sr
+
+
 def _generate_speech_inner(
     ref_audio_path: str,
     ref_text: str,
@@ -156,6 +275,7 @@ def _generate_speech_inner(
     progress_cb=None,
 ) -> tuple[bytes, str]:
     import requests as _requests
+    import soundfile as sf
 
     print(f"  [tts.py {_TTS_VERSION}]  engine=GPT-SoVITS")
 
@@ -166,60 +286,48 @@ def _generate_speech_inner(
     wav_ref, wav_is_temp = _to_wav(ref_audio_path)
 
     try:
+        ref_path    = str(Path(wav_ref).resolve())
         text_lang   = _detect_lang(gen_text)
         prompt_lang = _detect_lang(ref_text)
 
+        segments = _split_segments(gen_text)
+        total    = len(segments)
         print(f"  text_lang={text_lang}  prompt_lang={prompt_lang}  "
-              f"speed={speed}  chars={len(gen_text)}")
+              f"speed={speed}  segments={total}")
 
         if progress_cb:
-            progress_cb(0, 1)
+            progress_cb(0, total)
 
-        payload = {
-            "text":               gen_text,
-            "text_lang":          text_lang,
-            "ref_audio_path":     str(Path(wav_ref).resolve()),
-            "prompt_text":        ref_text,
-            "prompt_lang":        prompt_lang,
-            "top_k":              5,
-            "top_p":              1.0,
-            "temperature":        1.0,
-            "text_split_method":  "cut5",   # GPT-SoVITS handles chunking
-            "batch_size":         1,
-            "speed_factor":       float(speed),
-            "split_bucket":       True,
-            "fragment_interval":  0.3,
-            "seed":               -1,
-            "media_type":         "wav",
-            "streaming_mode":     False,
-            "parallel_infer":     True,
-            "repetition_penalty": 1.35,
-        }
+        sr = 24000
+        parts: list[np.ndarray] = []
 
-        print(f"  → POST {_GPTSOVITS_URL}/tts ...")
-        resp = _requests.post(
-            f"{_GPTSOVITS_URL}/tts",
-            json=payload,
-            timeout=600,          # allow up to 10 min for long documents
-        )
+        with _requests.Session() as session:
+            for i, (seg_text, pause_sec) in enumerate(segments):
+                print(f"  [{i+1}/{total}] {len(seg_text)} chars  "
+                      f"pause={pause_sec:.2f}s  {seg_text[:50]!r}")
 
-        if resp.status_code != 200:
-            # Try to surface a helpful error message
-            try:
-                detail = resp.json()
-            except Exception:
-                detail = resp.text[:300]
-            raise RuntimeError(
-                f"GPT-SoVITS API returned HTTP {resp.status_code}: {detail}"
-            )
+                audio_arr, sr = _call_gptsovits(
+                    session, ref_path, ref_text,
+                    seg_text, text_lang, prompt_lang, speed,
+                )
+                parts.append(audio_arr)
 
-        audio_bytes = resp.content
-        print(f"  [OK] {len(audio_bytes):,} bytes received.")
+                # Add natural pause after segment
+                if pause_sec > 0 and i < total - 1:
+                    silence = np.zeros(int(sr * pause_sec), dtype=np.float32)
+                    parts.append(silence)
 
-        if progress_cb:
-            progress_cb(1, 1)
+                if progress_cb:
+                    progress_cb(i + 1, total)
 
-        return audio_bytes, "wav"
+        # Stitch all segments into one WAV
+        full_audio = np.concatenate(parts) if parts else np.zeros(sr, dtype=np.float32)
+        buf = io.BytesIO()
+        sf.write(buf, full_audio, sr, format="WAV", subtype="PCM_16")
+        wav_bytes = buf.getvalue()
+
+        print(f"  [OK] {len(wav_bytes):,} bytes  ({len(full_audio)/sr:.1f}s)")
+        return wav_bytes, "wav"
 
     finally:
         if wav_is_temp:
