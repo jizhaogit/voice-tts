@@ -1,14 +1,10 @@
-"""GPT-SoVITS wrapper — zero-shot voice cloning via local API server.
+"""CosyVoice 2 TTS engine — zero-shot voice cloning, runs in-process.
 
-Architecture
-------------
-GPT-SoVITS runs as a separate process (started by main.py) that listens
-on http://127.0.0.1:9880.  This module splits the text into sentences
-itself, calls GPT-SoVITS once per sentence with cut0 (no internal
-splitting), then stitches the audio together with natural pauses.
-This gives full control over pause length and avoids mid-sentence stops.
+CosyVoice 2 is loaded once on first use and reused for all requests.
+It returns clean generated audio with NO reference audio prepended,
+so no stripping logic is needed at all.
 """
-_TTS_VERSION = "2026-04-10-f"
+_TTS_VERSION = "2026-04-13-a"
 
 import io
 import os
@@ -16,9 +12,13 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
+import warnings
 from pathlib import Path
 
 import numpy as np
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # ---------------------------------------------------------------------------
 # Console + file tee  (keeps full log in  data/tts_run.log)
@@ -112,62 +112,11 @@ def _to_wav(audio_path: str, target_sr: int = 24000) -> tuple[str, bool]:
 
 
 # ---------------------------------------------------------------------------
-# Reference audio trimmer
-# ---------------------------------------------------------------------------
-
-_REF_MIN_SEC = 3.0
-_REF_MAX_SEC = 10.0
-_REF_TARGET_SEC = 9.0   # trim long clips to this length
-
-
-def _ensure_ref_duration(wav_path: str) -> tuple[str, bool]:
-    """Ensure the reference WAV is within GPT-SoVITS's 3–10 s requirement.
-
-    - If duration is already in range: return as-is (is_temp=False).
-    - If duration > 10 s: trim to 9 s and return a temp file (is_temp=True).
-    - If duration < 3 s: raise ValueError so the user gets a clear message.
-    """
-    import soundfile as sf
-    info = sf.info(wav_path)
-    dur  = info.duration
-
-    if _REF_MIN_SEC <= dur <= _REF_MAX_SEC:
-        return wav_path, False
-
-    if dur < _REF_MIN_SEC:
-        raise ValueError(
-            f"Reference audio is only {dur:.1f}s — GPT-SoVITS requires at least "
-            f"{_REF_MIN_SEC:.0f}s. Please upload a longer clip in the Voice tab."
-        )
-
-    # Too long — trim with ffmpeg
-    ffmpeg_exe = _get_ffmpeg_exe()
-    if ffmpeg_exe is None:
-        print(f"  ⚠ Ref audio is {dur:.1f}s (max {_REF_MAX_SEC}s) but ffmpeg not "
-              f"found to trim it. Generation may fail.")
-        return wav_path, False
-
-    print(f"  ⚠ Ref audio is {dur:.1f}s — trimming to {_REF_TARGET_SEC}s for GPT-SoVITS.")
-    tmp = Path(tempfile.mktemp(suffix=".wav"))
-    try:
-        subprocess.run(
-            [ffmpeg_exe, "-y", "-i", wav_path,
-             "-t", str(_REF_TARGET_SEC),
-             "-ar", "24000", "-ac", "1", "-f", "wav", str(tmp)],
-            capture_output=True, check=True,
-        )
-        return str(tmp), True
-    except Exception as exc:
-        print(f"  ⚠ Trim failed: {exc} — using original (may be rejected by GPT-SoVITS).")
-        return wav_path, False
-
-
-# ---------------------------------------------------------------------------
 # Language detection
 # ---------------------------------------------------------------------------
 
 def _detect_lang(text: str) -> str:
-    """Return GPT-SoVITS language tag for the dominant script in *text*."""
+    """Return language tag for the dominant script in *text*."""
     zh = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
     ja = sum(1 for c in text if "\u3040" <= c <= "\u30ff")
     en = sum(1 for c in text if c.isascii() and c.isalpha())
@@ -179,7 +128,7 @@ def _detect_lang(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Text splitting  (our own — bypasses GPT-SoVITS internal splitting)
+# Text splitting
 # ---------------------------------------------------------------------------
 
 # Silence to append after each segment (seconds)
@@ -187,11 +136,14 @@ _PAUSE_SENTENCE  = 0.40   # after 。！？.!?
 _PAUSE_CLAUSE    = 0.15   # after ，,;；
 _PAUSE_PARAGRAPH = 0.70   # after a blank line / paragraph break
 
-# Minimum characters per GPT-SoVITS call.
-# Short segments produce so little speech that the output can be ≤ reference
-# duration, making reference-stripping impossible.  Merging short segments
-# together ensures each call generates enough audio to strip cleanly.
+# Minimum characters per CosyVoice 2 call.
+# Short segments produce so little speech that merging short segments
+# together ensures each call generates enough audio.
 _MIN_SEGMENT_CHARS = 20
+
+
+def _speakable(s: str) -> bool:
+    return any(c.isalpha() or c.isdigit() for c in s)
 
 
 def _split_segments(text: str) -> list[tuple[str, float]]:
@@ -205,9 +157,6 @@ def _split_segments(text: str) -> list[tuple[str, float]]:
 
     Returns only segments that contain at least one speakable character.
     """
-    def _speakable(s: str) -> bool:
-        return any(c.isalpha() or c.isdigit() for c in s)
-
     results: list[tuple[str, float]] = []
 
     # Step 1: split on paragraph breaks first
@@ -257,13 +206,13 @@ def _merge_short_segments(
     min_chars: int = _MIN_SEGMENT_CHARS,
     max_chars: int = 80,
 ) -> list[tuple[str, float]]:
-    """Merge consecutive short segments so each GPT-SoVITS call is long enough.
+    """Merge consecutive short segments so each CosyVoice 2 call is long enough.
 
     Short segments (< min_chars) are accumulated into a buffer and flushed only
     when the buffer reaches min_chars or a paragraph boundary is hit.
     The pause of the *last* merged piece is kept for the combined segment.
     Merging never crosses paragraph breaks (_PAUSE_PARAGRAPH) and never exceeds
-    max_chars so GPT-SoVITS doesn't choke on very long inputs.
+    max_chars so CosyVoice 2 doesn't choke on very long inputs.
     """
     if not segments:
         return segments
@@ -309,18 +258,102 @@ def _merge_short_segments(
 
 
 # ---------------------------------------------------------------------------
-# Public API  (same signature as the old F5-TTS wrapper)
+# CosyVoice 2 model singleton
+# ---------------------------------------------------------------------------
+_CV_LOCK  = threading.Lock()
+_CV_MODEL = None   # loaded lazily on first TTS call
+
+
+def _get_cosyvoice():
+    """Return the loaded CosyVoice2 instance (loads on first call, ~30-60 s)."""
+    global _CV_MODEL
+    if _CV_MODEL is not None:
+        return _CV_MODEL
+
+    with _CV_LOCK:
+        if _CV_MODEL is not None:
+            return _CV_MODEL
+
+        cv_dir = _PROJECT_ROOT / "cosyvoice"
+        if not cv_dir.exists():
+            raise RuntimeError(
+                "CosyVoice 2 source not found at cosyvoice/.\n"
+                "Run run.bat to install it automatically."
+            )
+
+        # Add CosyVoice package directories to sys.path
+        for extra in [str(cv_dir),
+                      str(cv_dir / "third_party" / "Matcha-TTS")]:
+            if extra not in sys.path:
+                sys.path.insert(0, extra)
+
+        model_dir = cv_dir / "pretrained_models" / "CosyVoice2-0.5B"
+        if not model_dir.exists():
+            raise RuntimeError(
+                "CosyVoice2-0.5B model not found at cosyvoice/pretrained_models/.\n"
+                "Run run.bat to download the model (~2.5 GB)."
+            )
+
+        from cosyvoice.cli.cosyvoice import CosyVoice2
+        import torch
+        fp16 = torch.cuda.is_available()
+        print(f"  [..] Loading CosyVoice2-0.5B  (fp16={fp16}) ...")
+        _CV_MODEL = CosyVoice2(
+            str(model_dir),
+            load_jit=False,
+            load_trt=False,
+            fp16=fp16,
+        )
+        print(f"  [OK] CosyVoice2-0.5B ready  (sr={_CV_MODEL.sample_rate} Hz)")
+        return _CV_MODEL
+
+
+# ---------------------------------------------------------------------------
+# Per-segment synthesis
 # ---------------------------------------------------------------------------
 
-_GPTSOVITS_URL = os.getenv("GPTSOVITS_URL", "http://127.0.0.1:9880")
+def _call_cosyvoice(
+    model,
+    prompt_speech_16k,   # torch.Tensor returned by load_wav()
+    ref_text:  str,
+    gen_text:  str,
+    speed:     float = 1.0,
+) -> tuple[np.ndarray, int]:
+    """Synthesise one text segment. Returns (float32 array, sample_rate)."""
+    sr     = model.sample_rate
+    chunks: list[np.ndarray] = []
 
+    for result in model.inference_zero_shot(
+        gen_text,
+        ref_text,
+        prompt_speech_16k,
+        stream=False,
+        speed=speed,
+    ):
+        audio = result["tts_speech"]          # torch.Tensor  (1, N)
+        chunks.append(audio.squeeze(0).float().cpu().numpy())
+
+    if not chunks:
+        # Model returned nothing — substitute proportional silence
+        sil_sec = min(2.0, max(0.3, len(gen_text) * 0.20))
+        print(f"  [!] no audio returned — using {sil_sec:.2f}s silence")
+        return np.zeros(int(sr * sil_sec), dtype=np.float32), sr
+
+    audio_arr = np.concatenate(chunks).astype(np.float32)
+    print(f"  [dbg] output={len(audio_arr)/sr:.2f}s  sr={sr}")
+    return audio_arr, sr
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def generate_speech(
     ref_audio_path: str,
-    ref_text: str,
-    gen_text: str,
-    speed: float = 1.0,
-    remove_silence: bool = False,
+    ref_text:       str,
+    gen_text:       str,
+    speed:          float = 1.0,
+    remove_silence: bool  = False,
     progress_cb=None,
 ) -> tuple[bytes, str]:
     """Generate speech and return (wav_bytes, 'wav')."""
@@ -331,151 +364,34 @@ def generate_speech(
         )
 
 
-def _gptsovits_base_payload(
-    ref_path: str,
-    ref_text: str,
-    gen_text: str,
-    text_lang: str,
-    prompt_lang: str,
-    speed: float,
-) -> dict:
-    return {
-        "text":               gen_text,
-        "text_lang":          text_lang,
-        "ref_audio_path":     ref_path,
-        "prompt_text":        ref_text,
-        "prompt_lang":        prompt_lang,
-        "top_k":              5,
-        "top_p":              1.0,
-        "temperature":        1.0,
-        "text_split_method":  "cut0",
-        "batch_size":         1,
-        "speed_factor":       float(speed),
-        "split_bucket":       False,
-        "fragment_interval":  0.0,
-        "seed":               -1,
-        "media_type":         "wav",
-        "streaming_mode":     False,
-        "parallel_infer":     True,
-        "repetition_penalty": 1.35,
-    }
-
-
-def _warmup_gptsovits(
-    session,
-    ref_path:    str,
-    ref_text:    str,
-    text_lang:   str,
-    prompt_lang: str,
-) -> None:
-    """Pre-load the reference audio into GPT-SoVITS's internal cache.
-
-    GPT-SoVITS processes and prepends the reference audio on the *first* API
-    call after a server start or a reference change (stage-1 time > 0 in the
-    log).  Subsequent calls with the same reference are served from cache and
-    contain ONLY the generated speech — no reference prefix.
-
-    Sending this short dummy call before the real generation loop ensures every
-    real segment is a cache hit, so no stripping is ever needed.
-    """
-    payload = _gptsovits_base_payload(
-        ref_path, ref_text, "好。", text_lang, prompt_lang, 1.0
-    )
-    print("  [..] warming up GPT-SoVITS reference cache ...")
-    try:
-        resp = session.post(f"{_GPTSOVITS_URL}/tts", json=payload, timeout=120)
-        if resp.status_code == 200:
-            print("  [OK] warmup done — reference is cached.")
-        else:
-            print(f"  [warmup] HTTP {resp.status_code} — {resp.text[:120]}")
-    except Exception as exc:
-        print(f"  [warmup] failed ({exc}) — first chunk may include reference prefix.")
-
-
-def _call_gptsovits(
-    session,
-    ref_path:    str,
-    ref_text:    str,
-    gen_text:    str,
-    text_lang:   str,
-    prompt_lang: str,
-    speed:       float,
-) -> tuple[np.ndarray, int]:
-    """Call GPT-SoVITS /tts for one segment. Returns (float32 array, sample_rate).
-
-    After _warmup_gptsovits() has been called, GPT-SoVITS serves all requests
-    from its reference cache and the output contains ONLY the generated audio —
-    no reference prefix, no stripping required.
-    """
-    import soundfile as sf
-
-    payload = _gptsovits_base_payload(
-        ref_path, ref_text, gen_text, text_lang, prompt_lang, speed
-    )
-
-    resp = session.post(f"{_GPTSOVITS_URL}/tts", json=payload, timeout=300)
-
-    if resp.status_code != 200:
-        try:
-            detail = resp.json()
-        except Exception:
-            detail = resp.text[:200]
-        raise RuntimeError(f"GPT-SoVITS HTTP {resp.status_code}: {detail}")
-
-    audio_arr, sr = sf.read(io.BytesIO(resp.content), dtype="float32")
-    if audio_arr.ndim > 1:
-        audio_arr = audio_arr.mean(axis=1)
-
-    print(f"  [dbg] output={len(audio_arr)/sr:.2f}s  sr={sr}")
-    return audio_arr, sr
-
-
 def _generate_speech_inner(
     ref_audio_path: str,
-    ref_text: str,
-    gen_text: str,
-    speed: float = 1.0,
-    remove_silence: bool = False,
+    ref_text:       str,
+    gen_text:       str,
+    speed:          float = 1.0,
+    remove_silence: bool  = False,
     progress_cb=None,
 ) -> tuple[bytes, str]:
-    import requests as _requests
     import soundfile as sf
 
-    print(f"  [tts.py {_TTS_VERSION}]  engine=GPT-SoVITS")
+    print(f"  [tts.py {_TTS_VERSION}]  engine=CosyVoice2")
 
     gen_text = gen_text.strip()
     if not gen_text:
         raise ValueError("gen_text is empty — nothing to synthesise.")
 
-    # Check GPT-SoVITS server is reachable before doing any work
-    import socket as _socket
-    with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
-        _s.settimeout(2)
-        if _s.connect_ex(("127.0.0.1", int(os.getenv("GPTSOVITS_PORT", 9880)))) != 0:
-            _port = int(os.getenv("GPTSOVITS_PORT", 9880))
-            raise RuntimeError(
-                f"GPT-SoVITS server is not running on port {_port}.\n"
-                "Check data\\gptsovits.log to see why it failed to start.\n"
-                "Common fixes:\n"
-                "  1. Run run.bat again — it installs missing dependencies.\n"
-                "  2. Make sure gpt-sovits\\api_v2.py exists (code was downloaded).\n"
-                "  3. Make sure models exist in gpt-sovits\\GPT_SoVITS\\pretrained_models\\\n"
-                "  4. First run can take 3-5 min (downloads lid.176.bin ~126 MB).\n"
-                "  5. Check if another process is using port 9880."
-            )
+    # Load model (cached after first call)
+    model = _get_cosyvoice()
 
+    # Convert reference audio to WAV if needed, then load at 16 kHz
     wav_ref, wav_is_temp = _to_wav(ref_audio_path)
-
-    # Trim/validate reference audio to GPT-SoVITS's 3–10 s requirement
-    wav_ref2, wav_is_temp2 = _ensure_ref_duration(wav_ref)
-    if wav_is_temp2 and wav_ref2 != wav_ref:
-        if wav_is_temp:
-            Path(wav_ref).unlink(missing_ok=True)
-        wav_ref      = wav_ref2
-        wav_is_temp  = True
-
     try:
-        ref_path    = str(Path(wav_ref).resolve())
+        ref_path = str(Path(wav_ref).resolve())
+
+        # Load reference at 16 kHz — CosyVoice 2 requires this sample rate
+        from cosyvoice.utils.file_utils import load_wav
+        prompt_speech_16k = load_wav(ref_path, 16000)
+
         text_lang   = _detect_lang(gen_text)
         prompt_lang = _detect_lang(ref_text)
 
@@ -488,34 +404,26 @@ def _generate_speech_inner(
         if progress_cb:
             progress_cb(0, total)
 
-        sr = 24000
+        sr    = model.sample_rate
         parts: list[np.ndarray] = []
 
-        with _requests.Session() as session:
-            # Pre-cache the reference audio so every real call is a cache hit
-            # and GPT-SoVITS never prepends the reference to generated output.
-            _warmup_gptsovits(session, ref_path, ref_text, text_lang, prompt_lang)
+        for i, (seg_text, pause_sec) in enumerate(segments):
+            print(f"  [{i+1}/{total}] {len(seg_text)} chars  "
+                  f"pause={pause_sec:.2f}s  {seg_text[:60]!r}")
 
-            for i, (seg_text, pause_sec) in enumerate(segments):
-                print(f"  [{i+1}/{total}] {len(seg_text)} chars  "
-                      f"pause={pause_sec:.2f}s  {seg_text[:50]!r}")
+            audio_arr, sr = _call_cosyvoice(
+                model, prompt_speech_16k, ref_text, seg_text, speed
+            )
+            parts.append(audio_arr)
 
-                audio_arr, sr = _call_gptsovits(
-                    session, ref_path, ref_text,
-                    seg_text, text_lang, prompt_lang, speed,
-                )
-                parts.append(audio_arr)
+            if pause_sec > 0 and i < total - 1:
+                parts.append(np.zeros(int(sr * pause_sec), dtype=np.float32))
 
-                # Add natural pause after segment
-                if pause_sec > 0 and i < total - 1:
-                    silence = np.zeros(int(sr * pause_sec), dtype=np.float32)
-                    parts.append(silence)
+            if progress_cb:
+                progress_cb(i + 1, total)
 
-                if progress_cb:
-                    progress_cb(i + 1, total)
-
-        # Stitch all segments into one WAV
-        full_audio = np.concatenate(parts) if parts else np.zeros(sr, dtype=np.float32)
+        full_audio = (np.concatenate(parts)
+                      if parts else np.zeros(sr, dtype=np.float32))
         buf = io.BytesIO()
         sf.write(buf, full_audio, sr, format="WAV", subtype="PCM_16")
         wav_bytes = buf.getvalue()

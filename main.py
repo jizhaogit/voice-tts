@@ -1,7 +1,6 @@
 """Voice TTS Studio — FastAPI application entry point."""
 import logging
 import os
-import socket
 import subprocess
 import sys
 import threading
@@ -61,114 +60,23 @@ for _folder in ["data/voices", "data/documents", "data/generated"]:
     Path(_folder).mkdir(parents=True, exist_ok=True)
 
 
-# ── GPT-SoVITS API server management ─────────────────────────────────────────
+# ── CosyVoice 2 model pre-loader ─────────────────────────────────────────────
 
-_GPTSOVITS_PORT = int(os.getenv("GPTSOVITS_PORT", 9880))
-_gptsovits_proc: subprocess.Popen | None = None
-
-
-def _gptsovits_is_running() -> bool:
-    """Return True if something is already listening on the GPT-SoVITS port."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(1)
-        return s.connect_ex(("127.0.0.1", _GPTSOVITS_PORT)) == 0
-
-
-def _start_gptsovits() -> None:
-    global _gptsovits_proc
-
-    gts_dir = _PROJECT_ROOT / "gpt-sovits"
-    if not (gts_dir / "api_v2.py").exists():
-        print("  ⚠ GPT-SoVITS not found at gpt-sovits/api_v2.py.")
-        print("    Run run.bat to install it automatically.")
-        return
-
-    if _gptsovits_is_running():
-        print(f"  [OK] GPT-SoVITS already running on port {_GPTSOVITS_PORT}.")
-        return
-
-    # Prefer the portable runtime Python; fall back to the current interpreter
-    runtime_py = _PROJECT_ROOT / "runtime" / "python.exe"
-    py_exe = str(runtime_py) if runtime_py.exists() else sys.executable
-
-    log_path = _PROJECT_ROOT / "data" / "gptsovits.log"
-    log_file = log_path.open("a", encoding="utf-8")
-
-    # Force UTF-8 mode so GPT-SoVITS works on Chinese Windows (cp950/GBK default
-    # encoding breaks simplified Chinese characters inside the subprocess).
-    gts_env = os.environ.copy()
-    gts_env["PYTHONUTF8"]               = "1"
-    gts_env["PYTHONIOENCODING"]         = "utf-8"
-    gts_env["PYTHONLEGACYWINDOWSSTDIO"] = "0"
-
-    print(f"  [..] Starting GPT-SoVITS API server on port {_GPTSOVITS_PORT} ...")
-    _gptsovits_proc = subprocess.Popen(
-        [py_exe,
-         "-X", "utf8",          # force UTF-8 mode — most reliable, beats env vars
-         "api_v2.py",
-         "-a", "127.0.0.1",
-         "-p", str(_GPTSOVITS_PORT)],
-        cwd=str(gts_dir),
-        env=gts_env,
-        stdout=log_file,
-        stderr=log_file,
-    )
-
-    # Wait up to 300 s for the server to accept connections.
-    # First run can be slow: lid.176.bin (~126 MB) is downloaded on first call.
-    _STARTUP_TIMEOUT = 300
-    for elapsed in range(_STARTUP_TIMEOUT):
-        time.sleep(1)
-        if _gptsovits_is_running():
-            print(f"  [OK] GPT-SoVITS ready (started in {elapsed + 1}s).")
-            print(f"       Log: {log_path}")
-            return
-        if _gptsovits_proc.poll() is not None:
-            print(f"  [ERROR] GPT-SoVITS process exited early (code {_gptsovits_proc.returncode}).")
-            print(f"          Check {log_path} for details.")
-            _gptsovits_proc = None
-            return
-        if elapsed > 0 and elapsed % 30 == 0:
-            print(f"  [..] Still waiting for GPT-SoVITS ... ({elapsed}s / {_STARTUP_TIMEOUT}s)")
-
-    print(f"  [!] GPT-SoVITS did not become ready within {_STARTUP_TIMEOUT}s.")
-    print(f"      Check {log_path} for details.")
-
-
-def _stop_gptsovits() -> None:
-    global _gptsovits_proc
-    if _gptsovits_proc and _gptsovits_proc.poll() is None:
-        print("  [..] Stopping GPT-SoVITS API server ...")
-        _gptsovits_proc.terminate()
-        try:
-            _gptsovits_proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            _gptsovits_proc.kill()
-        _gptsovits_proc = None
-        print("  [OK] GPT-SoVITS stopped.")
-
-
-_watchdog_active = False
-
-def _watchdog() -> None:
-    """Restart GPT-SoVITS automatically if it crashes."""
-    global _watchdog_active
-    _watchdog_active = True
-    while _watchdog_active:
-        time.sleep(5)
-        if not _watchdog_active:
-            break
-        if not _gptsovits_is_running():
-            print("  [!] GPT-SoVITS is not responding — restarting ...")
-            _start_gptsovits()
+def _preload_cosyvoice() -> None:
+    """Load CosyVoice 2 model at startup so the first TTS request is instant."""
+    try:
+        from core.tts import _get_cosyvoice
+        _get_cosyvoice()
+    except Exception as exc:
+        print(f"  ⚠  CosyVoice 2 preload failed: {exc}")
+        print("      The model will load on the first TTS request instead.")
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start GPT-SoVITS then launch watchdog to auto-restart on crash
-    threading.Thread(target=_start_gptsovits, daemon=False).start()
-    threading.Thread(target=_watchdog, daemon=True).start()
+    # Pre-load CosyVoice 2 model in the background
+    threading.Thread(target=_preload_cosyvoice, daemon=True).start()
 
     # Reset any interrupted jobs from a previous crash
     from core.db import read_db, write_db
@@ -184,10 +92,6 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    global _watchdog_active
-    _watchdog_active = False
-    _stop_gptsovits()
-
 
 # ── App factory ───────────────────────────────────────────────────────────────
 def create_app() -> FastAPI:
@@ -197,7 +101,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="Voice TTS Studio",
-        description="Zero-shot voice cloning with GPT-SoVITS",
+        description="Zero-shot voice cloning with CosyVoice 2",
         lifespan=lifespan,
     )
 
@@ -216,7 +120,7 @@ def create_app() -> FastAPI:
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 def open_browser(port: int) -> None:
-    time.sleep(2.5)          # give GPT-SoVITS a head-start
+    time.sleep(2.5)
     webbrowser.open(f"http://localhost:{port}")
 
 

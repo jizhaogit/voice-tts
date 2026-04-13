@@ -108,7 +108,7 @@ if %ERRORLEVEL%==0 (
 )
 echo  [OK] Packages already installed.
 echo.
-goto :check_gptsovits
+goto :check_cosyvoice
 
 :install_packages
 echo  [..] Installing packages -- this takes several minutes the first time...
@@ -192,42 +192,40 @@ echo  [OK] All packages installed and verified ^(%TORCH_IDX%^).
 echo.
 
 :: ════════════════════════════════════════════════════════
-:: STEP 3 — GPT-SoVITS: download code + pretrained models
+:: STEP 3 — CosyVoice 2: download code + pretrained model
 ::           Skipped automatically if already complete.
 :: ════════════════════════════════════════════════════════
 
-:check_gptsovits
-:: Install / verify all GPT-SoVITS dependencies via the Python setup script.
-:: It installs packages one at a time so a single failure never blocks the rest.
-echo  [..] Checking GPT-SoVITS dependencies...
-runtime\python.exe setup_gptsovits.py --deps-only
+:check_cosyvoice
+:: Install / verify CosyVoice 2 dependencies
+echo  [..] Checking CosyVoice 2 dependencies...
+runtime\python.exe setup_cosyvoice.py --deps-only
 if %ERRORLEVEL% neq 0 (
     echo  [!] Dependency check reported issues -- see above. Continuing anyway.
 )
 
-if exist "gpt-sovits\api_v2.py" (
-    if exist "gpt-sovits\GPT_SoVITS\pretrained_models\gsv-v2final-pretrained\s2G2333k.pth" (
-        echo  [OK] GPT-SoVITS code and models already present.
+if exist "cosyvoice\cosyvoice\cli\cosyvoice.py" (
+    if exist "cosyvoice\pretrained_models\CosyVoice2-0.5B\flow.pt" (
+        echo  [OK] CosyVoice 2 code and model already present.
         echo.
         goto :setup_env
     )
 )
 
 echo  =====================================================
-echo   GPT-SoVITS  First-time Setup
-echo   Downloading ~3.5 GB of models  ^(one-time only^)
+echo   CosyVoice 2  First-time Setup
+echo   Downloading ~2.5 GB of models  ^(one-time only^)
 echo   This will take several minutes depending on your
 echo   internet speed.  Please wait...
 echo  =====================================================
 echo.
 
-runtime\python.exe setup_gptsovits.py
+runtime\python.exe setup_cosyvoice.py
 if %ERRORLEVEL% neq 0 (
     echo.
-    echo  [ERROR] GPT-SoVITS setup failed.
-    echo  If you are in China and HuggingFace is blocked, set:
-    echo    set HF_ENDPOINT=https://hf-mirror.com
-    echo  then close this window and run run.bat again.
+    echo  [ERROR] CosyVoice 2 setup failed.
+    echo  If HuggingFace is blocked, the setup script will
+    echo  automatically try ModelScope as a fallback.
     pause & exit /b 1
 )
 echo.
@@ -237,10 +235,6 @@ echo.
 :: ════════════════════════════════════════════════════════
 
 :setup_env
-:: Force UTF-8 for all Python processes on this system (fixes cp950/GBK Chinese Windows)
-set PYTHONUTF8=1
-set PYTHONIOENCODING=utf-8
-
 if not exist ".env" (
     if exist ".env.example" copy .env.example .env >nul
     echo  [OK] Created .env from template.
@@ -249,11 +243,6 @@ if not exist ".env" (
 
 for %%d in (data data\voices data\documents data\generated) do (
     if not exist "%%d" mkdir "%%d"
-)
-
-:: Create GPT-SoVITS cache directories (must exist before first use)
-if not exist "gpt-sovits\GPT_SoVITS\pretrained_models\fast_langdetect" (
-    mkdir "gpt-sovits\GPT_SoVITS\pretrained_models\fast_langdetect"
 )
 
 if not exist "data\db.json" (
@@ -272,8 +261,7 @@ echo  =====================================================
 echo.
 echo    Browser:  http://localhost:7860
 echo.
-echo    GPT-SoVITS API server starts automatically.
-echo    First generation loads models into VRAM (~30 s).
+echo    CosyVoice 2 model loads on first request ^(~30-60 s^).
 echo.
 echo    Keep this window open while using the app.
 echo    Press Ctrl+C to stop.
