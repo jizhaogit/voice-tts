@@ -37,7 +37,12 @@
       "Bash(curl -s \"https://huggingface.co/FunAudioLLM/CosyVoice2-0.5B/raw/main/cosyvoice2.yaml\")",
       "Bash(curl -s \"https://raw.githubusercontent.com/FunAudioLLM/CosyVoice/main/cosyvoice/cli/frontend.py\")",
       "Bash(curl -s \"https://raw.githubusercontent.com/FunAudioLLM/CosyVoice/main/cosyvoice/tokenizer/tokenizer.py\")",
-      "Bash(curl -s \"https://raw.githubusercontent.com/FunAudioLLM/CosyVoice/main/cosyvoice/llm/llm.py\")"
+      "Bash(curl -s \"https://raw.githubusercontent.com/FunAudioLLM/CosyVoice/main/cosyvoice/llm/llm.py\")",
+      "WebFetch(domain:smithery.ai)",
+      "WebFetch(domain:modelscope.cn)",
+      "Bash(curl -s https://raw.githubusercontent.com/index-tts/index-tts/main/indextts/infer.py)",
+      "Bash(curl -s https://raw.githubusercontent.com/index-tts/index-tts/main/requirements.txt)",
+      "Bash(curl -s https://raw.githubusercontent.com/index-tts/index-tts/main/README.md)"
     ]
   }
 }

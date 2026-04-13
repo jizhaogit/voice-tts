@@ -88,6 +88,7 @@ Copy `.env.example` to `.env` to customise settings:
 ```
 PORT=7860
 HOST=0.0.0.0
+TTS_ENGINE=cosyvoice2
 TTS_CHUNK_SIZE=250
 ```
 
@@ -95,7 +96,29 @@ TTS_CHUNK_SIZE=250
 |----------|---------|-------------|
 | `PORT` | `7860` | Web server port |
 | `HOST` | `0.0.0.0` | Bind address (`127.0.0.1` to restrict to localhost) |
+| `TTS_ENGINE` | `cosyvoice2` | TTS engine — see [Engine Selection](#engine-selection) below |
 | `TTS_CHUNK_SIZE` | `250` | Characters per TTS segment — lower = more natural pauses |
+
+---
+
+## Engine Selection
+
+Voice TTS Studio supports two local TTS engines. Switch by editing `TTS_ENGINE` in `.env` and restarting `run.bat`.
+
+| Engine | Value | Languages | VRAM | Model size | Notes |
+|--------|-------|-----------|------|------------|-------|
+| **CosyVoice 2** | `cosyvoice2` | EN · ZH · JA | ~4 GB | ~4.8 GB | Default. Best Chinese and Japanese quality; cross-lingual cloning supported |
+| **IndexTTS 1.5** | `indextts` | EN · ZH | ~8 GB | ~5.9 GB | Strong Chinese/English; no reference text required |
+
+**How to switch:**
+
+1. Open `.env` (create from `.env.example` if it doesn't exist)
+2. Change `TTS_ENGINE=cosyvoice2` → `TTS_ENGINE=indextts` (or vice versa)
+3. Save and re-run `run.bat`
+
+`run.bat` automatically detects the selected engine and downloads the correct model on first use. Both engines can coexist on disk — switching is instant after the initial download.
+
+**Cross-lingual cloning (CosyVoice 2 only):** You can use an English voice sample to generate Chinese speech, or a Chinese voice sample for English output. IndexTTS requires source and target to share the same language.
 
 ---
 
@@ -108,7 +131,7 @@ voice-tts/
 │   ├── generate.py         # TTS generation jobs (async)
 │   └── voices.py           # Voice profile management
 ├── core/
-│   ├── tts.py              # CosyVoice 2 engine — in-process, no HTTP server
+│   ├── tts.py              # TTS engine wrapper — CosyVoice 2 and IndexTTS
 │   ├── db.py               # Lightweight JSON database
 │   └── parsers.py          # PDF / DOCX / HTML text extraction
 ├── static/
@@ -116,11 +139,13 @@ voice-tts/
 │   ├── app.js              # Frontend logic
 │   └── style.css           # Styling
 ├── cosyvoice/              # Auto-downloaded: CosyVoice 2 source + pretrained model
+├── indextts/               # Auto-downloaded: IndexTTS 1.5 checkpoints (if selected)
 ├── runtime/                # Auto-downloaded: portable Python 3.11
 ├── data/                   # Created at runtime: voices, documents, generated audio
 ├── main.py                 # FastAPI application entry point
 ├── run.bat                 # One-click launcher and auto-installer
 ├── setup_cosyvoice.py      # CosyVoice 2 setup script (code + deps + model)
+├── setup_indextts.py       # IndexTTS 1.5 setup script (deps + model)
 └── requirements.txt        # Python package dependencies
 ```
 
@@ -131,7 +156,8 @@ voice-tts/
 | File | Contents |
 |------|----------|
 | `data/tts_run.log` | TTS generation details for each request |
-| `data/cosyvoice2.log` | Model load errors on startup (if any) |
+| `data/cosyvoice2.log` | CosyVoice 2 model load errors on startup (if any) |
+| `data/indextts.log` | IndexTTS model load errors on startup (if any) |
 
 ---
 
@@ -139,5 +165,7 @@ voice-tts/
 
 - `run.bat` is safe to re-run at any time — it detects what is already installed and skips those steps
 - Chinese text normalisation uses WeTextProcessing; a compatible stub is created automatically on Windows if the native build fails
-- The CosyVoice 2 model runs **in-process** (no separate server process) — it loads once and stays in memory until the app is stopped
-- Reference audio longer than 10 seconds is trimmed automatically; shorter than 3 seconds will produce lower quality results
+- Both TTS engines run **in-process** (no separate server) — the model loads once and stays in memory until the app is stopped
+- Reference audio longer than 10 seconds is trimmed automatically; shorter than 3 seconds may reduce quality
+- Both engine model folders coexist on disk — switching `TTS_ENGINE` in `.env` and restarting is all that's needed
+- A better GPU improves generation speed; voice cloning quality is primarily determined by the reference audio, not GPU tier

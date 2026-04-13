@@ -686,3 +686,14 @@ document.addEventListener('click', e => {
 // Initial load
 loadVoices();
 loadDocuments();
+
+// ── Engine badge ───────────────────────────────────────────────────────────
+fetch('/api/config')
+  .then(r => r.json())
+  .then(cfg => {
+    const nameEl  = document.getElementById('engine-name');
+    const langsEl = document.getElementById('engine-langs');
+    if (nameEl)  nameEl.textContent  = cfg.engine_name + ' Engine';
+    if (langsEl) langsEl.textContent = cfg.engine_langs;
+  })
+  .catch(() => { /* silently keep placeholder text */ });

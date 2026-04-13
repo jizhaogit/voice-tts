@@ -60,24 +60,30 @@ for _folder in ["data/voices", "data/documents", "data/generated"]:
     Path(_folder).mkdir(parents=True, exist_ok=True)
 
 
-# ── CosyVoice 2 model pre-loader ─────────────────────────────────────────────
+# ── TTS model pre-loader ──────────────────────────────────────────────────────
 
-def _preload_cosyvoice() -> None:
-    """Load CosyVoice 2 model at startup so the first TTS request is instant."""
+def _preload_tts() -> None:
+    """Load the active TTS engine at startup so the first request is instant."""
     import traceback
-    _log = _PROJECT_ROOT / "data" / "cosyvoice2.log"
+    engine = os.getenv("TTS_ENGINE", "cosyvoice2").lower().strip()
+    _log = _PROJECT_ROOT / "data" / f"{engine}.log"
+    print(f"  [..] Pre-loading TTS engine: {engine}")
     try:
-        from core.tts import _get_cosyvoice
-        _get_cosyvoice()
+        if engine == "indextts":
+            from core.tts import _get_indextts
+            _get_indextts()
+        else:
+            from core.tts import _get_cosyvoice
+            _get_cosyvoice()
     except Exception as exc:
         msg = traceback.format_exc()
-        print(f"  ⚠  CosyVoice 2 preload failed: {exc}")
+        print(f"  ⚠  {engine} preload failed: {exc}")
         print(f"     Full traceback written to: {_log}")
         print("      The model will load on the first TTS request instead.")
         try:
             _log.parent.mkdir(parents=True, exist_ok=True)
             with open(_log, "w", encoding="utf-8") as _f:
-                _f.write(f"CosyVoice 2 load error\n{'='*60}\n")
+                _f.write(f"{engine} load error\n{'='*60}\n")
                 _f.write(msg)
         except Exception:
             pass
@@ -87,7 +93,7 @@ def _preload_cosyvoice() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Pre-load CosyVoice 2 model in the background
-    threading.Thread(target=_preload_cosyvoice, daemon=True).start()
+    threading.Thread(target=_preload_tts, daemon=True).start()
 
     # Reset any interrupted jobs from a previous crash
     from core.db import read_db, write_db
@@ -125,6 +131,17 @@ def create_app() -> FastAPI:
     @app.get("/")
     def root():
         return RedirectResponse(url="/static/index.html")
+
+    @app.get("/api/config")
+    def get_config():
+        """Return runtime configuration visible to the frontend."""
+        engine = os.getenv("TTS_ENGINE", "cosyvoice2").lower().strip()
+        labels = {
+            "cosyvoice2": {"name": "CosyVoice 2", "langs": "EN · ZH · JA"},
+            "indextts":   {"name": "IndexTTS 1.5", "langs": "EN · ZH"},
+        }
+        info = labels.get(engine, {"name": engine, "langs": "EN · ZH"})
+        return {"engine": engine, "engine_name": info["name"], "engine_langs": info["langs"]}
 
     return app
 

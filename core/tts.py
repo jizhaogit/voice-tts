@@ -258,6 +258,14 @@ def _merge_short_segments(
 
 
 # ---------------------------------------------------------------------------
+# Engine selection  (read once at import time)
+# ---------------------------------------------------------------------------
+def _active_engine() -> str:
+    """Return 'cosyvoice2' or 'indextts' from TTS_ENGINE env var."""
+    return os.getenv("TTS_ENGINE", "cosyvoice2").lower().strip()
+
+
+# ---------------------------------------------------------------------------
 # CosyVoice 2 model singleton
 # ---------------------------------------------------------------------------
 _CV_LOCK  = threading.Lock()
@@ -393,6 +401,65 @@ def _call_cosyvoice(
 
 
 # ---------------------------------------------------------------------------
+# IndexTTS 1.5 model singleton
+# ---------------------------------------------------------------------------
+_IT_LOCK  = threading.Lock()
+_IT_MODEL = None   # loaded lazily on first TTS call
+
+
+def _get_indextts():
+    """Return the loaded IndexTTS instance (loads on first call)."""
+    global _IT_MODEL
+    if _IT_MODEL is not None:
+        return _IT_MODEL
+
+    with _IT_LOCK:
+        if _IT_MODEL is not None:
+            return _IT_MODEL
+
+        model_dir = _PROJECT_ROOT / "indextts" / "checkpoints"
+        if not (model_dir / "config.yaml").exists():
+            raise RuntimeError(
+                "IndexTTS model not found at indextts/checkpoints/.\n"
+                "Set TTS_ENGINE=indextts in .env, then run run.bat to download (~5.9 GB)."
+            )
+
+        from indextts.infer import IndexTTS
+        import torch
+        fp16 = torch.cuda.is_available()
+        print(f"  [..] Loading IndexTTS-1.5  (fp16={fp16}) ...")
+        _IT_MODEL = IndexTTS(
+            cfg_path=str(model_dir / "config.yaml"),
+            model_dir=str(model_dir),
+            use_fp16=fp16,
+        )
+        print("  [OK] IndexTTS-1.5 ready")
+        return _IT_MODEL
+
+
+def _call_indextts(
+    model,
+    ref_path:  str,
+    gen_text:  str,
+) -> tuple[np.ndarray, int]:
+    """Synthesise one text segment with IndexTTS. Returns (float32 array, sample_rate)."""
+    # output_path=None → returns (sample_rate, np.ndarray) directly, no temp file needed
+    result = model.infer(audio_prompt=ref_path, text=gen_text, output_path=None)
+    sr, audio = result
+
+    # Normalise to float32 [-1, 1] (Gradio/IndexTTS returns int16-range values)
+    audio = np.array(audio, dtype=np.float32)
+    if audio.max() > 1.0 or audio.min() < -1.0:
+        audio = audio / 32768.0
+
+    if not len(audio):
+        sil_sec = min(2.0, max(0.3, len(gen_text) * 0.20))
+        return np.zeros(int(sr * sil_sec), dtype=np.float32), sr
+
+    return audio, int(sr)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -404,15 +471,85 @@ def generate_speech(
     remove_silence: bool  = False,
     progress_cb=None,
 ) -> tuple[bytes, str]:
-    """Generate speech and return (wav_bytes, 'wav')."""
+    """Generate speech and return (wav_bytes, 'wav').
+    Routes to CosyVoice 2 or IndexTTS based on TTS_ENGINE env var.
+    """
     _log_path = Path(__file__).parent.parent / "data" / "tts_run.log"
     with _Tee(_log_path):
-        return _generate_speech_inner(
-            ref_audio_path, ref_text, gen_text, speed, remove_silence, progress_cb
-        )
+        engine = _active_engine()
+        print(f"  [tts.py {_TTS_VERSION}]  engine={engine}")
+        if engine == "indextts":
+            return _generate_speech_indextts(
+                ref_audio_path, gen_text, speed, progress_cb
+            )
+        else:
+            return _generate_speech_cosyvoice2(
+                ref_audio_path, ref_text, gen_text, speed, remove_silence, progress_cb
+            )
 
 
-def _generate_speech_inner(
+def _generate_speech_indextts(
+    ref_audio_path: str,
+    gen_text:       str,
+    speed:          float = 1.0,
+    progress_cb=None,
+) -> tuple[bytes, str]:
+    """IndexTTS generation — no ref_text needed, handles segmentation internally."""
+    import soundfile as sf
+
+    gen_text = gen_text.strip()
+    if not gen_text:
+        raise ValueError("gen_text is empty — nothing to synthesise.")
+
+    model = _get_indextts()
+
+    wav_ref, wav_is_temp = _to_wav(ref_audio_path)
+    try:
+        ref_path = str(Path(wav_ref).resolve())
+
+        segments = _split_segments(gen_text)
+        segments = _merge_short_segments(segments)
+        total    = len(segments)
+        print(f"  segments={total}  speed={speed}")
+
+        if progress_cb:
+            progress_cb(0, total)
+
+        sr    = None
+        parts: list[np.ndarray] = []
+
+        for i, (seg_text, pause_sec) in enumerate(segments):
+            print(f"  [{i+1}/{total}] {len(seg_text)} chars  {seg_text[:60]!r}")
+            audio_arr, seg_sr = _call_indextts(model, ref_path, seg_text)
+            sr = seg_sr
+            parts.append(audio_arr)
+
+            if pause_sec > 0 and i < total - 1:
+                parts.append(np.zeros(int(sr * pause_sec), dtype=np.float32))
+
+            if progress_cb:
+                progress_cb(i + 1, total)
+
+        sr = sr or 24000
+        full_audio = np.concatenate(parts) if parts else np.zeros(sr, dtype=np.float32)
+
+        # Fade-in to mask any model initialisation click
+        fade_samples = min(int(sr * 0.06), len(full_audio))
+        if fade_samples > 0:
+            full_audio[:fade_samples] *= np.linspace(0.0, 1.0, fade_samples)
+
+        buf = io.BytesIO()
+        sf.write(buf, full_audio, sr, format="WAV", subtype="PCM_16")
+        wav_bytes = buf.getvalue()
+        print(f"  [OK] {len(wav_bytes):,} bytes  ({len(full_audio)/sr:.1f}s)")
+        return wav_bytes, "wav"
+
+    finally:
+        if wav_is_temp:
+            Path(wav_ref).unlink(missing_ok=True)
+
+
+def _generate_speech_cosyvoice2(
     ref_audio_path: str,
     ref_text:       str,
     gen_text:       str,
@@ -421,8 +558,6 @@ def _generate_speech_inner(
     progress_cb=None,
 ) -> tuple[bytes, str]:
     import soundfile as sf
-
-    print(f"  [tts.py {_TTS_VERSION}]  engine=CosyVoice2")
 
     gen_text = gen_text.strip()
     if not gen_text:

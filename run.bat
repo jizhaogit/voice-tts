@@ -192,12 +192,28 @@ echo  [OK] All packages installed and verified ^(%TORCH_IDX%^).
 echo.
 
 :: ════════════════════════════════════════════════════════
-:: STEP 3 — CosyVoice 2: download code + pretrained model
+:: STEP 3 — TTS Engine setup
+::           Reads TTS_ENGINE from .env (cosyvoice2 or indextts)
 ::           Skipped automatically if already complete.
 :: ════════════════════════════════════════════════════════
 
+:: Read TTS_ENGINE from .env (default: cosyvoice2)
+set TTS_ENGINE=cosyvoice2
+if exist ".env" (
+    for /f "usebackq tokens=1,* delims==" %%A in (".env") do (
+        if /i "%%A"=="TTS_ENGINE" set TTS_ENGINE=%%B
+    )
+)
+:: Strip spaces/CR from value
+set TTS_ENGINE=%TTS_ENGINE: =%
+
+echo  [..] TTS Engine: %TTS_ENGINE%
+echo.
+
+if /i "%TTS_ENGINE%"=="indextts" goto :check_indextts
+
+:: ── CosyVoice 2 ──────────────────────────────────────────────────────────────
 :check_cosyvoice
-:: Install / verify CosyVoice 2 dependencies
 echo  [..] Checking CosyVoice 2 dependencies...
 runtime\python.exe setup_cosyvoice.py --deps-only
 if %ERRORLEVEL% neq 0 (
@@ -235,6 +251,44 @@ if %ERRORLEVEL% neq 0 (
     pause & exit /b 1
 )
 echo.
+goto :setup_env
+
+:: ── IndexTTS ─────────────────────────────────────────────────────────────────
+:check_indextts
+echo  [..] Checking IndexTTS dependencies...
+runtime\python.exe setup_indextts.py --deps-only
+if %ERRORLEVEL% neq 0 (
+    echo  [!] Dependency check reported issues -- see above. Continuing anyway.
+)
+
+if exist "indextts\checkpoints\config.yaml" (
+    if exist "indextts\checkpoints\gpt.pth" (
+        if exist "indextts\checkpoints\bpe.model" (
+            echo  [OK] IndexTTS model already present.
+            echo.
+            goto :setup_env
+        )
+    )
+)
+
+echo  =====================================================
+echo   IndexTTS 1.5  First-time Setup
+echo   Downloading ~5.9 GB of models  ^(one-time only^)
+echo   Requires 8 GB VRAM.
+echo   This will take several minutes depending on your
+echo   internet speed.  Please wait...
+echo  =====================================================
+echo.
+
+runtime\python.exe setup_indextts.py
+if %ERRORLEVEL% neq 0 (
+    echo.
+    echo  [ERROR] IndexTTS setup failed.
+    echo  If HuggingFace is blocked, the setup script will
+    echo  automatically try ModelScope as a fallback.
+    pause & exit /b 1
+)
+echo.
 
 :: ════════════════════════════════════════════════════════
 :: STEP 4 — First-run environment setup
@@ -267,7 +321,13 @@ echo  =====================================================
 echo.
 echo    Browser:  http://localhost:7860
 echo.
-echo    CosyVoice 2 model loads on first request ^(~30-60 s^).
+if /i "%TTS_ENGINE%"=="indextts" (
+    echo    Engine:   IndexTTS 1.5  ^(EN/ZH, 8 GB VRAM^)
+    echo    Model loads on first request ^(~30-60 s^).
+) else (
+    echo    Engine:   CosyVoice 2  ^(EN/ZH/JA, 4 GB VRAM^)
+    echo    Model loads on first request ^(~30-60 s^).
+)
 echo.
 echo    Keep this window open while using the app.
 echo    Press Ctrl+C to stop.
