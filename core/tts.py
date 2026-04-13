@@ -8,7 +8,7 @@ itself, calls GPT-SoVITS once per sentence with cut0 (no internal
 splitting), then stitches the audio together with natural pauses.
 This gives full control over pause length and avoids mid-sentence stops.
 """
-_TTS_VERSION = "2026-04-10-d"
+_TTS_VERSION = "2026-04-10-e"
 
 import io
 import os
@@ -331,19 +331,15 @@ def generate_speech(
         )
 
 
-def _call_gptsovits(
-    session,
+def _gptsovits_base_payload(
     ref_path: str,
     ref_text: str,
     gen_text: str,
     text_lang: str,
     prompt_lang: str,
     speed: float,
-) -> np.ndarray:
-    """Call GPT-SoVITS API for a single segment. Returns float32 audio array."""
-    import soundfile as sf
-
-    payload = {
+) -> dict:
+    return {
         "text":               gen_text,
         "text_lang":          text_lang,
         "ref_audio_path":     ref_path,
@@ -352,7 +348,7 @@ def _call_gptsovits(
         "top_k":              5,
         "top_p":              1.0,
         "temperature":        1.0,
-        "text_split_method":  "cut0",   # we handle splitting ourselves
+        "text_split_method":  "cut0",
         "batch_size":         1,
         "speed_factor":       float(speed),
         "split_bucket":       False,
@@ -363,6 +359,59 @@ def _call_gptsovits(
         "parallel_infer":     True,
         "repetition_penalty": 1.35,
     }
+
+
+def _warmup_gptsovits(
+    session,
+    ref_path:    str,
+    ref_text:    str,
+    text_lang:   str,
+    prompt_lang: str,
+) -> None:
+    """Pre-load the reference audio into GPT-SoVITS's internal cache.
+
+    GPT-SoVITS processes and prepends the reference audio on the *first* API
+    call after a server start or a reference change (stage-1 time > 0 in the
+    log).  Subsequent calls with the same reference are served from cache and
+    contain ONLY the generated speech — no reference prefix.
+
+    Sending this short dummy call before the real generation loop ensures every
+    real segment is a cache hit, so no stripping is ever needed.
+    """
+    payload = _gptsovits_base_payload(
+        ref_path, ref_text, "好。", text_lang, prompt_lang, 1.0
+    )
+    print("  [..] warming up GPT-SoVITS reference cache ...")
+    try:
+        resp = session.post(f"{_GPTSOVITS_URL}/tts", json=payload, timeout=120)
+        if resp.status_code == 200:
+            print("  [OK] warmup done — reference is cached.")
+        else:
+            print(f"  [warmup] HTTP {resp.status_code} — {resp.text[:120]}")
+    except Exception as exc:
+        print(f"  [warmup] failed ({exc}) — first chunk may include reference prefix.")
+
+
+def _call_gptsovits(
+    session,
+    ref_path:    str,
+    ref_text:    str,
+    gen_text:    str,
+    text_lang:   str,
+    prompt_lang: str,
+    speed:       float,
+) -> tuple[np.ndarray, int]:
+    """Call GPT-SoVITS /tts for one segment. Returns (float32 array, sample_rate).
+
+    After _warmup_gptsovits() has been called, GPT-SoVITS serves all requests
+    from its reference cache and the output contains ONLY the generated audio —
+    no reference prefix, no stripping required.
+    """
+    import soundfile as sf
+
+    payload = _gptsovits_base_payload(
+        ref_path, ref_text, gen_text, text_lang, prompt_lang, speed
+    )
 
     resp = session.post(f"{_GPTSOVITS_URL}/tts", json=payload, timeout=300)
 
@@ -375,39 +424,9 @@ def _call_gptsovits(
 
     audio_arr, sr = sf.read(io.BytesIO(resp.content), dtype="float32")
     if audio_arr.ndim > 1:
-        audio_arr = audio_arr.mean(axis=1)   # stereo → mono
+        audio_arr = audio_arr.mean(axis=1)
 
-    total_sec = len(audio_arr) / sr
-    ref_info  = sf.info(ref_path)
-    ref_sec   = ref_info.duration
-
-    # GPT-SoVITS prepends a variable-length reference echo to every output.
-    # From empirical data, this echo is consistently ~75 % of the total output
-    # duration for short segments, and caps at ref_sec for longer ones.
-    # Using a fixed ref_sec strip over-strips short segments (cutting real speech).
-    # Using adaptive min(ref_sec, total_sec * 0.75) handles both cases correctly.
-    _REF_FRACTION = 0.75
-    strip_sec  = min(ref_sec, total_sec * _REF_FRACTION)
-    strip_samp = int(strip_sec * sr)
-    print(f"  [dbg] output={total_sec:.2f}s  ref={ref_sec:.2f}s  "
-          f"strip={strip_sec:.2f}s  sr={sr}")
-
-    if strip_samp < len(audio_arr):
-        audio_arr = audio_arr[strip_samp:]
-        gen_sec   = len(audio_arr) / sr
-        if gen_sec < 0.10:
-            # Essentially nothing left — substitute a short silence
-            audio_arr = np.zeros(int(sr * 0.30), dtype=np.float32)
-            print(f"  [dbg] remaining {gen_sec:.2f}s too short — using 0.30s silence")
-        else:
-            print(f"  [dbg] stripped {strip_sec:.2f}s → {gen_sec:.2f}s remaining")
-    else:
-        # Output shorter than strip amount (extremely short generation)
-        silence_sec = min(1.0, max(0.3, len(gen_text) * 0.15))
-        print(f"  [dbg] output ({total_sec:.2f}s) < strip ({strip_sec:.2f}s) "
-              f"— substituting {silence_sec:.2f}s silence")
-        audio_arr = np.zeros(int(sr * silence_sec), dtype=np.float32)
-
+    print(f"  [dbg] output={len(audio_arr)/sr:.2f}s  sr={sr}")
     return audio_arr, sr
 
 
@@ -473,6 +492,10 @@ def _generate_speech_inner(
         parts: list[np.ndarray] = []
 
         with _requests.Session() as session:
+            # Pre-cache the reference audio so every real call is a cache hit
+            # and GPT-SoVITS never prepends the reference to generated output.
+            _warmup_gptsovits(session, ref_path, ref_text, text_lang, prompt_lang)
+
             for i, (seg_text, pause_sec) in enumerate(segments):
                 print(f"  [{i+1}/{total}] {len(seg_text)} chars  "
                       f"pause={pause_sec:.2f}s  {seg_text[:50]!r}")
