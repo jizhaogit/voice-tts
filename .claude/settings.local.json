@@ -32,7 +32,12 @@
       "Bash(powershell.exe -Command \"Get-ChildItem 'C:\\\\CFT\\\\voice-tts' -Name | Sort-Object\")",
       "Bash(powershell.exe -Command \"Select-String -Path 'C:\\\\CFT\\\\voice-tts\\\\*.py','C:\\\\CFT\\\\voice-tts\\\\*.bat','C:\\\\CFT\\\\voice-tts\\\\*.txt','C:\\\\CFT\\\\voice-tts\\\\*.json','C:\\\\CFT\\\\voice-tts\\\\api\\\\*.py','C:\\\\CFT\\\\voice-tts\\\\core\\\\*.py','C:\\\\CFT\\\\voice-tts\\\\static\\\\*.js','C:\\\\CFT\\\\voice-tts\\\\static\\\\*.html' -Pattern 'gptsovits|gpt-sovits|gpt_sovits|GPT-SoVITS' -List | Select-Object Filename,LineNumber,Line\")",
       "Bash(powershell.exe -Command \"Test-Path 'C:\\\\CFT\\\\voice-tts\\\\cosyvoice'\")",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(curl -s \"https://raw.githubusercontent.com/FunAudioLLM/CosyVoice/main/cosyvoice/cli/cosyvoice.py\")",
+      "Bash(curl -s \"https://huggingface.co/FunAudioLLM/CosyVoice2-0.5B/raw/main/cosyvoice2.yaml\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/FunAudioLLM/CosyVoice/main/cosyvoice/cli/frontend.py\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/FunAudioLLM/CosyVoice/main/cosyvoice/tokenizer/tokenizer.py\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/FunAudioLLM/CosyVoice/main/cosyvoice/llm/llm.py\")"
     ]
   }
 }

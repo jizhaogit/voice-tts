@@ -207,16 +207,18 @@ if %ERRORLEVEL% neq 0 (
 if exist "cosyvoice\cosyvoice\cli\cosyvoice.py" (
     if exist "cosyvoice\pretrained_models\CosyVoice2-0.5B\flow.pt" (
         if exist "cosyvoice\third_party\Matcha-TTS\matcha\__init__.py" (
-            echo  [OK] CosyVoice 2 code and model already present.
-            echo.
-            goto :setup_env
+            if exist "cosyvoice\pretrained_models\CosyVoice2-0.5B\CosyVoice-BlankEN\model.safetensors" (
+                echo  [OK] CosyVoice 2 code and model already present.
+                echo.
+                goto :setup_env
+            )
         )
     )
 )
 
 echo  =====================================================
 echo   CosyVoice 2  First-time Setup
-echo   Downloading ~2.5 GB of models  ^(one-time only^)
+echo   Downloading ~4.8 GB of models  ^(one-time only^)
 echo   This will take several minutes depending on your
 echo   internet speed.  Please wait...
 echo  =====================================================

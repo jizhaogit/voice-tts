@@ -79,7 +79,24 @@ def setup_code() -> None:
 
     # ── Step A: CosyVoice 2 main source ──────────────────────────────────────
     marker = _CV_DIR / "cosyvoice" / "cli" / "cosyvoice.py"
+
+    # Version check: older downloads lacked the qwen_pretrain_path override,
+    # which causes "NoneType" errors when loading the Qwen2 tokeniser.
+    # Re-download automatically if the fix is absent.
+    _stale = False
     if marker.exists():
+        try:
+            src_text = marker.read_text(encoding="utf-8", errors="ignore")
+            if "qwen_pretrain_path" not in src_text:
+                print("  [!] CosyVoice 2 source is outdated (missing qwen_pretrain_path fix).")
+                print("      Re-downloading ...")
+                import shutil as _sh
+                _sh.rmtree(_CV_DIR, ignore_errors=True)
+                _stale = True
+        except Exception:
+            pass
+
+    if marker.exists() and not _stale:
         print("  [OK] CosyVoice 2 source already present.")
     else:
         url = "https://github.com/FunAudioLLM/CosyVoice/archive/refs/heads/main.zip"
@@ -168,13 +185,30 @@ def _install_wetextprocessing_stub() -> None:
 
 
 def setup_models() -> None:
-    """Download CosyVoice2-0.5B pretrained model (~2.5 GB)."""
-    if _MODEL_DIR.exists() and any(_MODEL_DIR.iterdir()):
+    """Download CosyVoice2-0.5B pretrained model (~4.8 GB total).
+
+    Critical files that must ALL be present:
+      flow.pt, llm.pt, hift.pt, speech_tokenizer_v2.onnx,
+      campplus.onnx, cosyvoice2.yaml,
+      CosyVoice-BlankEN/model.safetensors   ← Qwen2 backbone weights
+      CosyVoice-BlankEN/config.json         ← Qwen2 architecture config
+    """
+    # Check the critical files — not just any file in the directory
+    _required = [
+        _MODEL_DIR / "flow.pt",
+        _MODEL_DIR / "llm.pt",
+        _MODEL_DIR / "cosyvoice2.yaml",
+        _MODEL_DIR / "CosyVoice-BlankEN" / "config.json",
+        _MODEL_DIR / "CosyVoice-BlankEN" / "model.safetensors",
+    ]
+    _missing = [str(f) for f in _required if not f.exists()]
+    if not _missing:
         print("  [OK] CosyVoice2-0.5B model already present.")
         return
 
+    print(f"  [!] Missing model files: {_missing}")
     _MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    print("  [..] Downloading CosyVoice2-0.5B (~2.5 GB) — this takes a few minutes ...")
+    print("  [..] Downloading CosyVoice2-0.5B (~4.8 GB) — this takes several minutes ...")
 
     # Try HuggingFace first
     ok = subprocess.run(
