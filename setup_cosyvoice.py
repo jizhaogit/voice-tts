@@ -58,30 +58,58 @@ def _pip(pkg: str) -> bool:
 
 
 def setup_code() -> None:
-    """Download CosyVoice 2 source from GitHub."""
+    """Download CosyVoice 2 source + Matcha-TTS submodule from GitHub.
+
+    GitHub ZIP downloads do NOT include git submodules, so Matcha-TTS
+    (third_party/Matcha-TTS) must be fetched separately.
+    """
+    import shutil, urllib.request, zipfile
+
+    # ── Step A: CosyVoice 2 main source ──────────────────────────────────────
     marker = _CV_DIR / "cosyvoice" / "cli" / "cosyvoice.py"
     if marker.exists():
         print("  [OK] CosyVoice 2 source already present.")
-        return
+    else:
+        url = "https://github.com/FunAudioLLM/CosyVoice/archive/refs/heads/main.zip"
+        print("  [..] Downloading CosyVoice 2 source from GitHub ...")
+        zip_path = _ROOT / "_cv_src.zip"
+        try:
+            urllib.request.urlretrieve(url, zip_path)
+            tmp = _ROOT / "_cv_tmp"
+            with zipfile.ZipFile(zip_path) as zf:
+                zf.extractall(tmp)
+            src = tmp / "CosyVoice-main"
+            if _CV_DIR.exists():
+                shutil.rmtree(_CV_DIR)
+            shutil.move(str(src), str(_CV_DIR))
+            print("  [OK] CosyVoice 2 source downloaded.")
+        finally:
+            zip_path.unlink(missing_ok=True)
+            shutil.rmtree(_ROOT / "_cv_tmp", ignore_errors=True)
 
-    import shutil, urllib.request, zipfile
-
-    url = "https://github.com/FunAudioLLM/CosyVoice/archive/refs/heads/main.zip"
-    print(f"  [..] Downloading CosyVoice 2 source from GitHub ...")
-    zip_path = _ROOT / "_cv_src.zip"
-    try:
-        urllib.request.urlretrieve(url, zip_path)
-        tmp = _ROOT / "_cv_tmp"
-        with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(tmp)
-        src = tmp / "CosyVoice-main"
-        if _CV_DIR.exists():
-            shutil.rmtree(_CV_DIR)
-        shutil.move(str(src), str(_CV_DIR))
-        print("  [OK] CosyVoice 2 source downloaded.")
-    finally:
-        zip_path.unlink(missing_ok=True)
-        shutil.rmtree(_ROOT / "_cv_tmp", ignore_errors=True)
+    # ── Step B: Matcha-TTS submodule (not included in GitHub ZIP) ────────────
+    matcha_marker = _CV_DIR / "third_party" / "Matcha-TTS" / "matcha" / "__init__.py"
+    if matcha_marker.exists():
+        print("  [OK] Matcha-TTS submodule already present.")
+    else:
+        matcha_url = "https://github.com/shivammehta25/Matcha-TTS/archive/refs/heads/main.zip"
+        print("  [..] Downloading Matcha-TTS submodule from GitHub ...")
+        zip_path = _ROOT / "_matcha_src.zip"
+        matcha_dir = _CV_DIR / "third_party" / "Matcha-TTS"
+        try:
+            urllib.request.urlretrieve(matcha_url, zip_path)
+            tmp = _ROOT / "_matcha_tmp"
+            with zipfile.ZipFile(zip_path) as zf:
+                zf.extractall(tmp)
+            src = tmp / "Matcha-TTS-main"
+            if matcha_dir.exists():
+                shutil.rmtree(matcha_dir)
+            matcha_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(matcha_dir))
+            print("  [OK] Matcha-TTS submodule downloaded.")
+        finally:
+            zip_path.unlink(missing_ok=True)
+            shutil.rmtree(_ROOT / "_matcha_tmp", ignore_errors=True)
 
 
 def setup_deps() -> None:

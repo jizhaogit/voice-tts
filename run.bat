@@ -206,9 +206,11 @@ if %ERRORLEVEL% neq 0 (
 
 if exist "cosyvoice\cosyvoice\cli\cosyvoice.py" (
     if exist "cosyvoice\pretrained_models\CosyVoice2-0.5B\flow.pt" (
-        echo  [OK] CosyVoice 2 code and model already present.
-        echo.
-        goto :setup_env
+        if exist "cosyvoice\third_party\Matcha-TTS\matcha\__init__.py" (
+            echo  [OK] CosyVoice 2 code and model already present.
+            echo.
+            goto :setup_env
+        )
     )
 )
 
