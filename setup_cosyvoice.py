@@ -188,34 +188,46 @@ def setup_models() -> None:
     """Download CosyVoice2-0.5B pretrained model (~4.8 GB total).
 
     Critical files that must ALL be present:
-      flow.pt, llm.pt, hift.pt, speech_tokenizer_v2.onnx,
-      campplus.onnx, cosyvoice2.yaml,
+      flow.pt, llm.pt, cosyvoice2.yaml,
       CosyVoice-BlankEN/model.safetensors   ← Qwen2 backbone weights
       CosyVoice-BlankEN/config.json         ← Qwen2 architecture config
+      CosyVoice-BlankEN/merges.txt          ← Qwen2 BPE tokenizer vocab
+                                              (*.txt was wrongly excluded before)
     """
-    # Check the critical files — not just any file in the directory
+    # Check all critical files — including the BPE tokenizer vocab
     _required = [
         _MODEL_DIR / "flow.pt",
         _MODEL_DIR / "llm.pt",
         _MODEL_DIR / "cosyvoice2.yaml",
         _MODEL_DIR / "CosyVoice-BlankEN" / "config.json",
         _MODEL_DIR / "CosyVoice-BlankEN" / "model.safetensors",
+        _MODEL_DIR / "CosyVoice-BlankEN" / "merges.txt",
     ]
     _missing = [str(f) for f in _required if not f.exists()]
     if not _missing:
         print("  [OK] CosyVoice2-0.5B model already present.")
         return
 
+    # If only merges.txt is missing (common after installs that excluded *.txt),
+    # download just that one file instead of the whole model again.
+    _missing_names = [Path(p).name for p in _missing]
+    if _missing_names == ["merges.txt"]:
+        print("  [!] Only merges.txt is missing (was excluded by old *.txt filter).")
+        print("  [..] Downloading merges.txt only ...")
+        _download_merges_txt()
+        print("  [OK] merges.txt downloaded.")
+        return
+
     print(f"  [!] Missing model files: {_missing}")
     _MODEL_DIR.mkdir(parents=True, exist_ok=True)
     print("  [..] Downloading CosyVoice2-0.5B (~4.8 GB) — this takes several minutes ...")
 
-    # Try HuggingFace first
+    # Try HuggingFace first — note: only exclude *.md, NOT *.txt (merges.txt is critical)
     ok = subprocess.run(
         [sys.executable, "-c",
          "from huggingface_hub import snapshot_download; "
          f'snapshot_download("FunAudioLLM/CosyVoice2-0.5B", '
-         f'local_dir=r"{_MODEL_DIR}", ignore_patterns=["*.md","*.txt"])'],
+         f'local_dir=r"{_MODEL_DIR}", ignore_patterns=["*.md"])'],
         capture_output=False,
     ).returncode == 0
 
@@ -229,7 +241,37 @@ def setup_models() -> None:
             capture_output=False,
         )
 
+    # Ensure merges.txt exists even if it wasn't in the repo
+    if not (_MODEL_DIR / "CosyVoice-BlankEN" / "merges.txt").exists():
+        print("  [..] merges.txt not in model repo — fetching from Qwen2-0.5B-Instruct ...")
+        _download_merges_txt()
+
     print("  [OK] Model download done.")
+
+
+def _download_merges_txt() -> None:
+    """Download merges.txt (Qwen2 BPE vocab) into CosyVoice-BlankEN/."""
+    dest = _MODEL_DIR / "CosyVoice-BlankEN" / "merges.txt"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    # Try from the CosyVoice2 model repo first
+    ok = subprocess.run(
+        [sys.executable, "-c",
+         "from huggingface_hub import hf_hub_download; "
+         f'hf_hub_download("FunAudioLLM/CosyVoice2-0.5B", '
+         f'"CosyVoice-BlankEN/merges.txt", local_dir=r"{_MODEL_DIR}")'],
+        capture_output=True,
+    ).returncode == 0
+
+    if not ok:
+        # Fall back: download from the base Qwen2-0.5B-Instruct model
+        subprocess.run(
+            [sys.executable, "-c",
+             "from huggingface_hub import hf_hub_download; import shutil, pathlib; "
+             f'p = hf_hub_download("Qwen/Qwen2-0.5B-Instruct", "merges.txt"); '
+             f'shutil.copy(p, r"{dest}")'],
+            capture_output=False,
+        )
 
 
 if __name__ == "__main__":

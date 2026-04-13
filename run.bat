@@ -208,9 +208,11 @@ if exist "cosyvoice\cosyvoice\cli\cosyvoice.py" (
     if exist "cosyvoice\pretrained_models\CosyVoice2-0.5B\flow.pt" (
         if exist "cosyvoice\third_party\Matcha-TTS\matcha\__init__.py" (
             if exist "cosyvoice\pretrained_models\CosyVoice2-0.5B\CosyVoice-BlankEN\model.safetensors" (
-                echo  [OK] CosyVoice 2 code and model already present.
-                echo.
-                goto :setup_env
+                if exist "cosyvoice\pretrained_models\CosyVoice2-0.5B\CosyVoice-BlankEN\merges.txt" (
+                    echo  [OK] CosyVoice 2 code and model already present.
+                    echo.
+                    goto :setup_env
+                )
             )
         )
     )
