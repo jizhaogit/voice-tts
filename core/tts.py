@@ -469,6 +469,12 @@ def _generate_speech_inner(
 
         full_audio = (np.concatenate(parts)
                       if parts else np.zeros(sr, dtype=np.float32))
+
+        # Fade-in over first 60 ms to mask any model initialisation click/noise
+        fade_samples = min(int(sr * 0.06), len(full_audio))
+        if fade_samples > 0:
+            full_audio[:fade_samples] *= np.linspace(0.0, 1.0, fade_samples)
+
         buf = io.BytesIO()
         sf.write(buf, full_audio, sr, format="WAV", subtype="PCM_16")
         wav_bytes = buf.getvalue()
