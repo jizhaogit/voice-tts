@@ -17,7 +17,22 @@
       "Bash(powershell -Command \"Select-String -Path 'C:\\\\Users\\\\T909046\\\\Desktop\\\\tts_run.log' -Pattern 'sparse speeds|trimming ref|Skipping unresolvable' -Encoding UTF8 | Measure-Object\")",
       "Bash(findstr \"_TTS_VERSION\" \"D:\\\\voice-tts\\\\core\\\\tts.py\")",
       "Bash(copy \"C:\\\\CFT\\\\voice-tts\\\\core\\\\tts.py\" \"D:\\\\voice-tts\\\\core\\\\tts.py\")",
-      "Bash(dir \"C:\\\\CFT\\\\voice-tts\\\\gpt-sovits\" /b)"
+      "Bash(dir \"C:\\\\CFT\\\\voice-tts\\\\gpt-sovits\" /b)",
+      "Bash(xargs grep:*)",
+      "Bash(del /f /q \"C:\\\\CFT\\\\voice-tts\\\\setup_gptsovits.py\")",
+      "Bash(Remove-Item -Path \"C:\\\\CFT\\\\voice-tts\\\\setup_gptsovits.py\" -Force)",
+      "Bash(cmd.exe /c \"del /f /q C:\\\\CFT\\\\voice-tts\\\\setup_gptsovits.py\")",
+      "Bash(cmd.exe /c \"del /f /q \\\\\"C:\\\\CFT\\\\voice-tts\\\\setup_gptsovits.py\\\\\" && echo DELETED || echo FAILED\")",
+      "Bash(cmd.exe /c \"if exist \\\\\"C:\\\\CFT\\\\voice-tts\\\\setup_gptsovits.py\\\\\" \\(echo EXISTS\\) else \\(echo GONE\\)\")",
+      "Bash(cmd.exe /c \"dir C:\\\\CFT\\\\voice-tts\\\\setup_*.py 2>&1\")",
+      "Bash(cmd.exe /c \"dir /b C:\\\\CFT\\\\voice-tts\")",
+      "Bash(cmd.exe /c dir /b \"C:\\\\CFT\\\\voice-tts\")",
+      "Bash(python3 -c ':*)",
+      "Bash(powershell.exe -Command \"Remove-Item 'C:\\\\CFT\\\\voice-tts\\\\setup_gptsovits.py' -Force; if \\(Test-Path 'C:\\\\CFT\\\\voice-tts\\\\setup_gptsovits.py'\\) { 'STILL EXISTS' } else { 'DELETED' }\")",
+      "Bash(powershell.exe -Command \"Get-ChildItem 'C:\\\\CFT\\\\voice-tts' -Name | Sort-Object\")",
+      "Bash(powershell.exe -Command \"Select-String -Path 'C:\\\\CFT\\\\voice-tts\\\\*.py','C:\\\\CFT\\\\voice-tts\\\\*.bat','C:\\\\CFT\\\\voice-tts\\\\*.txt','C:\\\\CFT\\\\voice-tts\\\\*.json','C:\\\\CFT\\\\voice-tts\\\\api\\\\*.py','C:\\\\CFT\\\\voice-tts\\\\core\\\\*.py','C:\\\\CFT\\\\voice-tts\\\\static\\\\*.js','C:\\\\CFT\\\\voice-tts\\\\static\\\\*.html' -Pattern 'gptsovits|gpt-sovits|gpt_sovits|GPT-SoVITS' -List | Select-Object Filename,LineNumber,Line\")",
+      "Bash(powershell.exe -Command \"Test-Path 'C:\\\\CFT\\\\voice-tts\\\\cosyvoice'\")",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

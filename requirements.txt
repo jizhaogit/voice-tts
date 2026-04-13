@@ -20,5 +20,5 @@ imageio-ffmpeg>=0.5.1
 # Voice transcription (auto-fill reference text)
 openai-whisper>=20231117
 
-# HTTP client — used to call the GPT-SoVITS local API server
+# HTTP client — used by setup scripts for downloading assets
 requests>=2.31.0
