@@ -8,7 +8,7 @@ itself, calls GPT-SoVITS once per sentence with cut0 (no internal
 splitting), then stitches the audio together with natural pauses.
 This gives full control over pause length and avoids mid-sentence stops.
 """
-_TTS_VERSION = "2026-04-10-e"
+_TTS_VERSION = "2026-04-10-f"
 
 import io
 import os
