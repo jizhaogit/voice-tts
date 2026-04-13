@@ -16,7 +16,8 @@
       "Bash(powershell -Command \"Select-String -Path 'C:\\\\Users\\\\T909046\\\\Desktop\\\\tts_run.log' -Pattern '\\\\[dbg\\\\]|Skipping|sparse speeds|trimming ref' -Encoding UTF8 | Select-Object -First 60\")",
       "Bash(powershell -Command \"Select-String -Path 'C:\\\\Users\\\\T909046\\\\Desktop\\\\tts_run.log' -Pattern 'sparse speeds|trimming ref|Skipping unresolvable' -Encoding UTF8 | Measure-Object\")",
       "Bash(findstr \"_TTS_VERSION\" \"D:\\\\voice-tts\\\\core\\\\tts.py\")",
-      "Bash(copy \"C:\\\\CFT\\\\voice-tts\\\\core\\\\tts.py\" \"D:\\\\voice-tts\\\\core\\\\tts.py\")"
+      "Bash(copy \"C:\\\\CFT\\\\voice-tts\\\\core\\\\tts.py\" \"D:\\\\voice-tts\\\\core\\\\tts.py\")",
+      "Bash(dir \"C:\\\\CFT\\\\voice-tts\\\\gpt-sovits\" /b)"
     ]
   }
 }

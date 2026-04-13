@@ -8,7 +8,7 @@ itself, calls GPT-SoVITS once per sentence with cut0 (no internal
 splitting), then stitches the audio together with natural pauses.
 This gives full control over pause length and avoids mid-sentence stops.
 """
-_TTS_VERSION = "2026-04-10-c"
+_TTS_VERSION = "2026-04-10-d"
 
 import io
 import os
@@ -380,20 +380,31 @@ def _call_gptsovits(
     total_sec = len(audio_arr) / sr
     ref_info  = sf.info(ref_path)
     ref_sec   = ref_info.duration
-    ref_samp  = int(ref_sec * sr)
-    print(f"  [dbg] output={total_sec:.2f}s  ref={ref_sec:.2f}s  "
-          f"sr={sr}  samples={len(audio_arr)}/{ref_samp}")
 
-    # GPT-SoVITS v2 ALWAYS prepends the reference audio to every output chunk.
-    # Strip it unconditionally — the only guard is that some generated audio remains.
-    if len(audio_arr) > ref_samp:
-        audio_arr = audio_arr[ref_samp:]
-        print(f"  [dbg] stripped {ref_sec:.2f}s ref prefix → {len(audio_arr)/sr:.2f}s remaining")
+    # GPT-SoVITS prepends a variable-length reference echo to every output.
+    # From empirical data, this echo is consistently ~75 % of the total output
+    # duration for short segments, and caps at ref_sec for longer ones.
+    # Using a fixed ref_sec strip over-strips short segments (cutting real speech).
+    # Using adaptive min(ref_sec, total_sec * 0.75) handles both cases correctly.
+    _REF_FRACTION = 0.75
+    strip_sec  = min(ref_sec, total_sec * _REF_FRACTION)
+    strip_samp = int(strip_sec * sr)
+    print(f"  [dbg] output={total_sec:.2f}s  ref={ref_sec:.2f}s  "
+          f"strip={strip_sec:.2f}s  sr={sr}")
+
+    if strip_samp < len(audio_arr):
+        audio_arr = audio_arr[strip_samp:]
+        gen_sec   = len(audio_arr) / sr
+        if gen_sec < 0.10:
+            # Essentially nothing left — substitute a short silence
+            audio_arr = np.zeros(int(sr * 0.30), dtype=np.float32)
+            print(f"  [dbg] remaining {gen_sec:.2f}s too short — using 0.30s silence")
+        else:
+            print(f"  [dbg] stripped {strip_sec:.2f}s → {gen_sec:.2f}s remaining")
     else:
-        # Output ≤ reference: the generated portion is essentially zero.
-        # Return a short silence — never play back the reference audio.
+        # Output shorter than strip amount (extremely short generation)
         silence_sec = min(1.0, max(0.3, len(gen_text) * 0.15))
-        print(f"  [dbg] WARNING: output ({total_sec:.2f}s) ≤ ref ({ref_sec:.2f}s) "
+        print(f"  [dbg] output ({total_sec:.2f}s) < strip ({strip_sec:.2f}s) "
               f"— substituting {silence_sec:.2f}s silence")
         audio_arr = np.zeros(int(sr * silence_sec), dtype=np.float32)
 
