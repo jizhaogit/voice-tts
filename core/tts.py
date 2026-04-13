@@ -362,7 +362,7 @@ def _get_cosyvoice():
 
 def _call_cosyvoice(
     model,
-    prompt_speech_16k,   # torch.Tensor returned by load_wav()
+    ref_path:  str,       # file path — inference_zero_shot loads it internally
     ref_text:  str,
     gen_text:  str,
     speed:     float = 1.0,
@@ -374,7 +374,7 @@ def _call_cosyvoice(
     for result in model.inference_zero_shot(
         gen_text,
         ref_text,
-        prompt_speech_16k,
+        ref_path,          # pass path — CosyVoice loads it at 16 kHz internally
         stream=False,
         speed=speed,
     ):
@@ -431,14 +431,11 @@ def _generate_speech_inner(
     # Load model (cached after first call)
     model = _get_cosyvoice()
 
-    # Convert reference audio to WAV if needed, then load at 16 kHz
+    # Convert reference audio to WAV if needed
+    # (pass path directly — inference_zero_shot loads audio internally)
     wav_ref, wav_is_temp = _to_wav(ref_audio_path)
     try:
         ref_path = str(Path(wav_ref).resolve())
-
-        # Load reference at 16 kHz — CosyVoice 2 requires this sample rate
-        from cosyvoice.utils.file_utils import load_wav
-        prompt_speech_16k = load_wav(ref_path, 16000)
 
         text_lang   = _detect_lang(gen_text)
         prompt_lang = _detect_lang(ref_text)
@@ -460,7 +457,7 @@ def _generate_speech_inner(
                   f"pause={pause_sec:.2f}s  {seg_text[:60]!r}")
 
             audio_arr, sr = _call_cosyvoice(
-                model, prompt_speech_16k, ref_text, seg_text, speed
+                model, ref_path, ref_text, seg_text, speed
             )
             parts.append(audio_arr)
 
