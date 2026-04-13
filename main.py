@@ -114,8 +114,10 @@ def _start_gptsovits() -> None:
         stderr=log_file,
     )
 
-    # Wait up to 120 s for the server to accept connections
-    for elapsed in range(120):
+    # Wait up to 300 s for the server to accept connections.
+    # First run can be slow: lid.176.bin (~126 MB) is downloaded on first call.
+    _STARTUP_TIMEOUT = 300
+    for elapsed in range(_STARTUP_TIMEOUT):
         time.sleep(1)
         if _gptsovits_is_running():
             print(f"  [OK] GPT-SoVITS ready (started in {elapsed + 1}s).")
@@ -126,8 +128,10 @@ def _start_gptsovits() -> None:
             print(f"          Check {log_path} for details.")
             _gptsovits_proc = None
             return
+        if elapsed > 0 and elapsed % 30 == 0:
+            print(f"  [..] Still waiting for GPT-SoVITS ... ({elapsed}s / {_STARTUP_TIMEOUT}s)")
 
-    print(f"  [!] GPT-SoVITS did not become ready within 120 s.")
+    print(f"  [!] GPT-SoVITS did not become ready within {_STARTUP_TIMEOUT}s.")
     print(f"      Check {log_path} for details.")
 
 

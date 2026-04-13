@@ -433,10 +433,16 @@ def _generate_speech_inner(
     with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
         _s.settimeout(2)
         if _s.connect_ex(("127.0.0.1", int(os.getenv("GPTSOVITS_PORT", 9880)))) != 0:
+            _port = int(os.getenv("GPTSOVITS_PORT", 9880))
             raise RuntimeError(
-                "GPT-SoVITS server is not running on port 9880.\n"
-                "It should restart automatically in a few seconds — please try again.\n"
-                "If the problem persists, restart run.bat."
+                f"GPT-SoVITS server is not running on port {_port}.\n"
+                "Check data\\gptsovits.log to see why it failed to start.\n"
+                "Common fixes:\n"
+                "  1. Run run.bat again — it installs missing dependencies.\n"
+                "  2. Make sure gpt-sovits\\api_v2.py exists (code was downloaded).\n"
+                "  3. Make sure models exist in gpt-sovits\\GPT_SoVITS\\pretrained_models\\\n"
+                "  4. First run can take 3-5 min (downloads lid.176.bin ~126 MB).\n"
+                "  5. Check if another process is using port 9880."
             )
 
     wav_ref, wav_is_temp = _to_wav(ref_audio_path)
