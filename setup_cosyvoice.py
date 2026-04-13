@@ -10,18 +10,22 @@ _CV_DIR    = _ROOT / "cosyvoice"
 _MODEL_DIR = _CV_DIR / "pretrained_models" / "CosyVoice2-0.5B"
 
 # Packages needed by CosyVoice 2 (installed one at a time so failures don't block)
-# Versions aligned with CosyVoice 2 requirements.txt (April 2025)
+# Derived from CosyVoice official requirements.txt — Windows inference only
+# (skips: deepspeed/tensorrt = Linux-only, tensorboard = training-only,
+#         gradio/fastapi = CosyVoice's own server, not ours)
 PACKAGES = [
     # ── Core ML backbone ──────────────────────────────────────────────────────
     "transformers>=4.40.0",         # HuggingFace Transformers — model backbone (REQUIRED)
     "x-transformers>=1.30.0",       # Extended Transformers — generation head (REQUIRED)
     "diffusers>=0.29.0",            # Flow-matching / diffusion scheduler
     "einops",                       # Tensor rearrangement helpers
+    "lightning>=2.0.0",             # PyTorch Lightning — used in flow modules (REQUIRED)
     # ── Audio processing ──────────────────────────────────────────────────────
     "librosa>=0.10.0",              # Audio feature extraction
     "soundfile>=0.12.1",            # WAV read/write
     "pydub",                        # Audio format conversion helper
     "pyworld",                      # Pitch (F0) extraction — may need VC++ on Windows
+    "matplotlib>=3.7.0",            # Audio/spectrogram visualisation helpers
     # ── Text / language processing ────────────────────────────────────────────
     "pypinyin",                     # Chinese pinyin conversion
     "cn2an",                        # Chinese numeral ↔ Arabic numeral
@@ -29,13 +33,19 @@ PACKAGES = [
     # ── Config / serialisation ────────────────────────────────────────────────
     "HyperPyYAML>=1.2.0",           # YAML config loader used by CosyVoice
     "omegaconf>=2.3.0",             # Hydra-style config objects
+    "hydra-core>=1.3.0",            # Hydra config framework (omegaconf backend)
     "conformer>=0.3.2",             # Conformer encoder block
+    # ── ONNX ──────────────────────────────────────────────────────────────────
+    "onnx>=1.14.0",                 # ONNX model format (frontend VAD/encoder)
+    "onnxruntime>=1.16.0",          # Windows runtime (CPU + optional CUDA provider)
     # ── gRPC (proto compilation) ──────────────────────────────────────────────
     "grpcio>=1.57.0",
     "grpcio-tools>=1.57.0",         # Needed to compile .proto files at import time
     "protobuf>=4.25.0,<5.0",        # Must stay <5 for grpcio compatibility
-    # ── ONNX Runtime (Windows: CPU+GPU variant; JIT disabled so optional) ─────
-    "onnxruntime>=1.16.0",          # Windows build; GPU via CUDA provider if available
+    # ── Data / graph utilities ────────────────────────────────────────────────
+    "networkx>=3.0",                # Graph operations used in text processing
+    "pyarrow>=14.0.0",              # Columnar data — required by modelscope
+    "wget",                         # Simple file download utility
     # ── Model hub / download ──────────────────────────────────────────────────
     "modelscope>=1.9.0",            # ModelScope fallback download
     "huggingface_hub>=0.20.0",      # HuggingFace Hub download
