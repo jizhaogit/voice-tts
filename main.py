@@ -64,12 +64,23 @@ for _folder in ["data/voices", "data/documents", "data/generated"]:
 
 def _preload_cosyvoice() -> None:
     """Load CosyVoice 2 model at startup so the first TTS request is instant."""
+    import traceback
+    _log = _PROJECT_ROOT / "data" / "cosyvoice2.log"
     try:
         from core.tts import _get_cosyvoice
         _get_cosyvoice()
     except Exception as exc:
+        msg = traceback.format_exc()
         print(f"  ⚠  CosyVoice 2 preload failed: {exc}")
+        print(f"     Full traceback written to: {_log}")
         print("      The model will load on the first TTS request instead.")
+        try:
+            _log.parent.mkdir(parents=True, exist_ok=True)
+            with open(_log, "w", encoding="utf-8") as _f:
+                _f.write(f"CosyVoice 2 load error\n{'='*60}\n")
+                _f.write(msg)
+        except Exception:
+            pass
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
