@@ -264,6 +264,42 @@ _CV_LOCK  = threading.Lock()
 _CV_MODEL = None   # loaded lazily on first TTS call
 
 
+def _patch_cosyvoice_source(cv_dir: Path, model_dir: Path) -> None:
+    """Patch cosyvoice.py in-place if it is missing the qwen_pretrain_path override.
+
+    Older downloads of CosyVoice call load_hyperpyyaml(f) with no overrides,
+    leaving qwen_pretrain_path as '' (empty string).  Downstream code converts
+    '' to None via  ``path = path or None``, which causes:
+        TypeError: expected str, bytes or os.PathLike object, not NoneType
+    The fix is to inject the override so qwen_pretrain_path points to the
+    CosyVoice-BlankEN subdirectory that ships with the model.
+    """
+    cosyvoice_py = cv_dir / "cosyvoice" / "cli" / "cosyvoice.py"
+    if not cosyvoice_py.exists():
+        return
+
+    text = cosyvoice_py.read_text(encoding="utf-8", errors="ignore")
+    if "qwen_pretrain_path" in text:
+        return  # already patched / up-to-date
+
+    # The old code has exactly:  configs = load_hyperpyyaml(f)
+    # Replace it with the override version.
+    old_call = "configs = load_hyperpyyaml(f)"
+    new_call = (
+        "configs = load_hyperpyyaml("
+        "f, overrides={'qwen_pretrain_path': "
+        "os.path.join(model_dir, 'CosyVoice-BlankEN')})"
+    )
+    if old_call not in text:
+        print("  [!] Could not auto-patch cosyvoice.py — pattern not found.")
+        print("      Try deleting cosyvoice/ and running run.bat again.")
+        return
+
+    patched = text.replace(old_call, new_call, 1)
+    cosyvoice_py.write_text(patched, encoding="utf-8")
+    print("  [OK] Patched cosyvoice.py with qwen_pretrain_path fix.")
+
+
 def _get_cosyvoice():
     """Return the loaded CosyVoice2 instance (loads on first call, ~30-60 s)."""
     global _CV_MODEL
@@ -291,8 +327,20 @@ def _get_cosyvoice():
         if not model_dir.exists():
             raise RuntimeError(
                 "CosyVoice2-0.5B model not found at cosyvoice/pretrained_models/.\n"
-                "Run run.bat to download the model (~2.5 GB)."
+                "Run run.bat to download the model (~4.8 GB)."
             )
+
+        # Check CosyVoice-BlankEN (Qwen2 backbone) — must exist for tokeniser
+        blank_en = model_dir / "CosyVoice-BlankEN"
+        if not (blank_en / "config.json").exists():
+            raise RuntimeError(
+                "CosyVoice-BlankEN/config.json not found.\n"
+                "The model download was incomplete (~4.8 GB required).\n"
+                "Delete cosyvoice/pretrained_models/CosyVoice2-0.5B/ and run run.bat again."
+            )
+
+        # Patch old source that lacks the qwen_pretrain_path override
+        _patch_cosyvoice_source(cv_dir, model_dir)
 
         from cosyvoice.cli.cosyvoice import CosyVoice2
         import torch
