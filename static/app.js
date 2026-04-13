@@ -639,10 +639,10 @@ function buildJobContent(job) {
       </div>
       <div class="progress-label muted small">
         ${job.status === 'pending'
-          ? 'Waiting to start… (F5-TTS model may download ~1.2 GB on first run)'
+          ? 'Waiting to start… (CosyVoice 2 model loads in ~30-60 s on first run)'
           : job.total_chunks > 0
             ? `Processing chunk ${job.processed_chunks} of ${job.total_chunks}…`
-            : 'Initialising F5-TTS…'}
+            : 'Initialising CosyVoice 2…'}
       </div>
     </div>` : '';
 

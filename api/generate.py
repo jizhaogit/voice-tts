@@ -1,4 +1,4 @@
-"""TTS generation jobs — async inference using F5-TTS."""
+"""TTS generation jobs — async inference using CosyVoice 2."""
 import threading
 import uuid
 from datetime import datetime

@@ -1,6 +1,6 @@
 """Voice profile management.
 
-A 'voice' in F5-TTS is defined by:
+A 'voice' in CosyVoice 2 is defined by:
   - A reference audio clip (3-15 sec, clear speech, no music/noise)
   - The exact transcript of that clip (ref_text)
   - Language tag: en | zh | ja

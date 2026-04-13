@@ -18,6 +18,7 @@ PACKAGES = [
     "transformers>=4.40.0",         # HuggingFace Transformers — model backbone (REQUIRED)
     "x-transformers>=1.30.0",       # Extended Transformers — generation head (REQUIRED)
     "diffusers>=0.29.0",            # Flow-matching / diffusion scheduler
+    "peft>=0.10.0",                 # LoRA / adapter layers used by diffusers (replaces LoRACompatibleLinear)
     "einops",                       # Tensor rearrangement helpers
     "lightning>=2.0.0",             # PyTorch Lightning — used in flow modules (REQUIRED)
     # ── Audio processing ──────────────────────────────────────────────────────
@@ -49,6 +50,7 @@ PACKAGES = [
     # ── Model hub / download ──────────────────────────────────────────────────
     "modelscope>=1.9.0",            # ModelScope fallback download
     "huggingface_hub>=0.20.0",      # HuggingFace Hub download
+    "gdown>=5.1.0",                 # Google Drive downloader used by matcha.utils
     # ── Misc utilities ────────────────────────────────────────────────────────
     "rich>=13.0.0",                 # Pretty console output
     "tqdm",                         # Progress bars
