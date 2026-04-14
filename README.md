@@ -89,7 +89,6 @@ Copy `.env.example` to `.env` to customise settings:
 PORT=7860
 HOST=0.0.0.0
 TTS_ENGINE=cosyvoice2
-TTS_CHUNK_SIZE=250
 ```
 
 | Variable | Default | Description |
@@ -97,7 +96,6 @@ TTS_CHUNK_SIZE=250
 | `PORT` | `7860` | Web server port |
 | `HOST` | `0.0.0.0` | Bind address (`127.0.0.1` to restrict to localhost) |
 | `TTS_ENGINE` | `cosyvoice2` | TTS engine — see [Engine Selection](#engine-selection) below |
-| `TTS_CHUNK_SIZE` | `250` | Characters per TTS segment — lower = more natural pauses |
 
 ---
 
