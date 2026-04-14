@@ -1,6 +1,10 @@
 """Auto-install IndexTTS 1.5 for Voice TTS Studio."""
+import shutil
 import subprocess
 import sys
+import tempfile
+import urllib.request
+import zipfile
 from pathlib import Path
 
 _ROOT      = Path(__file__).resolve().parent
@@ -44,8 +48,23 @@ def _pip(pkg: str, silent_fail: bool = False) -> bool:
     return True
 
 
+def _download_zip(url: str, dest: Path) -> bool:
+    """Download *url* to *dest* using urllib (browser-like, no git required)."""
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0"},  # avoid GitHub throttling pip UA
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp, open(dest, "wb") as f:
+            shutil.copyfileobj(resp, f)
+        return True
+    except Exception as exc:
+        print(f"    ⚠  Download failed: {exc}")
+        return False
+
+
 def _install_indextts() -> bool:
-    """Install indextts from GitHub (not on PyPI)."""
+    """Install indextts from GitHub (not on PyPI, no git required)."""
     # Check if already importable
     check = subprocess.run(
         [sys.executable, "-c", "import indextts"],
@@ -55,23 +74,44 @@ def _install_indextts() -> bool:
         print("    [OK] indextts already installed.")
         return True
 
-    print("    pip install indextts (from GitHub) ...")
-    ok = _pip(_INDEXTTS_GITHUB_ZIP, silent_fail=True)
-    if ok:
+    print("    Downloading indextts source from GitHub ...")
+    tmp_dir = Path(tempfile.mkdtemp(prefix="indextts_"))
+    zip_path = tmp_dir / "indextts.zip"
+
+    try:
+        if not _download_zip(_INDEXTTS_GITHUB_ZIP, zip_path):
+            return False
+
+        print("    Extracting ...")
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(tmp_dir)
+
+        # GitHub zips extract to a folder named "<repo>-<branch>"
+        candidates = [d for d in tmp_dir.iterdir()
+                      if d.is_dir() and d.name != "__MACOSX"]
+        if not candidates:
+            print("    ⚠  Zip extraction produced no folders.")
+            return False
+        src_dir = candidates[0]
+
+        print(f"    pip install from {src_dir.name} ...")
+        r = subprocess.run(
+            [sys.executable, "-m", "pip", "install", str(src_dir),
+             "-q", "--no-warn-script-location"],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            first_line = next(
+                (l.strip() for l in r.stderr.splitlines() if l.strip()), "install failed"
+            )
+            print(f"    ⚠  pip install failed: {first_line[:120]}")
+            return False
+
+        print("    [OK] indextts installed.")
         return True
 
-    # GitHub zip failed (no internet or rate-limited) — try cloning via pip+git
-    print("    ⚠  GitHub zip failed — trying git+https ...")
-    ok = _pip(
-        "git+https://github.com/index-tts/index-tts.git",
-        silent_fail=True,
-    )
-    if ok:
-        return True
-
-    print("    ⚠  indextts install failed.")
-    print("       Make sure you have internet access and re-run run.bat.")
-    return False
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def setup_deps() -> None:
