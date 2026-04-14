@@ -57,14 +57,19 @@ PACKAGES = [
 ]
 
 
-def _pip(pkg: str) -> bool:
+def _pip(pkg: str, silent_fail: bool = False) -> bool:
     r = subprocess.run(
         [sys.executable, "-m", "pip", "install", pkg, "-q",
          "--no-warn-script-location"],
         capture_output=True, text=True,
     )
     if r.returncode != 0:
-        print(f"    ⚠  {pkg}: {r.stderr.strip()[:120]}")
+        if not silent_fail:
+            # Take only the first non-empty stderr line to avoid multi-line noise
+            first_line = next(
+                (l.strip() for l in r.stderr.splitlines() if l.strip()), "build failed"
+            )
+            print(f"    ⚠  {pkg}: {first_line[:120]}")
         return False
     return True
 
@@ -149,17 +154,16 @@ def setup_deps() -> None:
         # pyworld needs a C compiler on Windows — handle gracefully
         if pkg == "pyworld":
             print(f"    pip install {pkg} ...")
-            if not _pip(pkg):
-                print("    ⚠  pyworld build failed (needs VC++ build tools).")
-                print("       Pitch extraction will fall back to basic mode. Continuing.")
+            if not _pip(pkg, silent_fail=True):
+                print("    ⚠  pyworld needs VC++ build tools — skipping (pitch falls back to basic mode).")
             continue
         print(f"    pip install {pkg} ...")
         _pip(pkg)
 
-    # WeTextProcessing: Chinese text normaliser — may need VC++ on Windows
+    # WeTextProcessing: Chinese text normaliser — needs VC++ on Windows; stub used as fallback
     print("    pip install WeTextProcessing ...")
-    if not _pip("WeTextProcessing"):
-        print("    ⚠  WeTextProcessing failed — creating Windows stub ...")
+    if not _pip("WeTextProcessing", silent_fail=True):
+        print("    ⚠  WeTextProcessing needs VC++ build tools — using Windows stub instead (normal).")
         _install_wetextprocessing_stub()
 
     print("  [OK] CosyVoice 2 dependencies done.")

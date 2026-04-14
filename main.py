@@ -92,7 +92,7 @@ def _preload_tts() -> None:
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Pre-load CosyVoice 2 model in the background
+    # Pre-load the active TTS engine in the background (errors written to data/{engine}.log)
     threading.Thread(target=_preload_tts, daemon=True).start()
 
     # Reset any interrupted jobs from a previous crash

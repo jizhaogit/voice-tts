@@ -108,7 +108,7 @@ if %ERRORLEVEL%==0 (
 )
 echo  [OK] Packages already installed.
 echo.
-goto :check_cosyvoice
+goto :read_engine
 
 :install_packages
 echo  [..] Installing packages -- this takes several minutes the first time...
@@ -197,6 +197,7 @@ echo.
 ::           Skipped automatically if already complete.
 :: ════════════════════════════════════════════════════════
 
+:read_engine
 :: Read TTS_ENGINE from .env (default: cosyvoice2)
 set TTS_ENGINE=cosyvoice2
 if exist ".env" (
